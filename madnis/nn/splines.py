@@ -3,18 +3,11 @@ import math
 import torch
 import torch.nn.functional as F
 
-DEFAULT_MIN_BIN_WIDTH = 1e-3
-DEFAULT_MIN_BIN_HEIGHT = 1e-3
-DEFAULT_MIN_DERIVATIVE = 1e-3
-
 
 # TODO: replace with torch.searchsorted
 def searchsorted(bin_locations, inputs, eps=1e-6):
     bin_locations[..., -1] += eps
-    return torch.sum(
-        inputs[..., None] >= bin_locations,
-        dim=-1
-    ) - 1
+    return torch.sum(inputs[..., None] >= bin_locations, dim=-1) - 1
 
 
 def unconstrained_rational_quadratic_spline(
@@ -97,9 +90,9 @@ def rational_quadratic_spline(
     right: float = 1.0,
     bottom: float = 0.0,
     top: float = 1.0,
-    min_bin_width: float = DEFAULT_MIN_BIN_WIDTH,
-    min_bin_height: float = DEFAULT_MIN_BIN_HEIGHT,
-    min_derivative: float = DEFAULT_MIN_DERIVATIVE,
+    min_bin_width: float = 1e-3,
+    min_bin_height: float = 1e-3,
+    min_derivative: float = 1e-3,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """
     Constrained rational quadratic spline transformations as introduced in 1906.04032.
@@ -134,8 +127,9 @@ def rational_quadratic_spline(
     cumwidths[..., -1] = right
     widths = cumwidths[..., 1:] - cumwidths[..., :-1]
 
-    derivatives = ((min_derivative + F.softplus(unnormalized_derivatives))
-                   / (min_derivative + math.log(2)))
+    derivatives = (min_derivative + F.softplus(unnormalized_derivatives)) / (
+        min_derivative + math.log(2)
+    )
 
     heights = F.softmax(unnormalized_heights, dim=-1)
     heights = min_bin_height + (1 - min_bin_height * num_bins) * heights
