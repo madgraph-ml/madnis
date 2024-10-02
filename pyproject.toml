@@ -25,6 +25,14 @@ dependencies = [
 [project.optional-dependencies]
 vegas = ["vegas"]
 
+[tool.black]
+line-length = 100
+
+[tool.isort]
+profile = "black" # https://black.readthedocs.io/en/stable/guides/using_black_with_other_tools.html
+atomic = true
+line_length = 100
+
 [project.urls]
-Homepage = "https://github.com/madgraph-ml/MadNIS"
-Issues = "https://github.com/madgraph-ml/MadNIS/issues"
+Homepage = "https://github.com/madgraph-ml/madnis"
+Issues = "https://github.com/madgraph-ml/madnis/issues"

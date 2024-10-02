@@ -1,13 +1,12 @@
-from typing import Callable, Literal
 import math
+from typing import Callable, Literal
 
+import numpy as np
 import torch
 import torch.nn as nn
-import numpy as np
 
-from .splines import unconstrained_rational_quadratic_spline
 from .mlp import MLP, StackedMLP
-
+from .splines import unconstrained_rational_quadratic_spline
 
 L2PI = -0.5 * math.log(2 * math.pi)
 
@@ -80,10 +79,7 @@ class Flow(nn.Module):
                 blocks = int(2 * n_perms)
                 condition_masks = (
                     torch.tensor(
-                        [
-                            [int(i) for i in np.binary_repr(i, n_perms)]
-                            for i in range(dims_in)
-                        ]
+                        [[int(i) for i in np.binary_repr(i, n_perms)] for i in range(dims_in)]
                     )
                     .flip(dims=(1,))
                     .bool()
@@ -116,9 +112,7 @@ class Flow(nn.Module):
         for mask in self.condition_masks:
             dims_cond = torch.count_nonzero(mask)
             self.subnets.append(
-                subnet_constructor(
-                    dims_cond + dims_c, (dims_in - dims_cond) * (3 * bins + 1)
-                )
+                subnet_constructor(dims_cond + dims_c, (dims_in - dims_cond) * (3 * bins + 1))
             )
 
     def apply_mappings(
@@ -249,9 +243,7 @@ class Flow(nn.Module):
             z = torch.rand((n,), **options)
         else:
             z = torch.randn((n,), **options)
-        x, jac = self.transform(
-            z, c, True, channel, channel_sizes, channel_sorted, channel_equal
-        )
+        x, jac = self.transform(z, c, True, channel, channel_sizes, channel_sorted, channel_equal)
         if return_log_prob or return_prob:
             log_prob_latent = self.latent_log_prob(z)
             log_prob = log_prob_latent + jac
