@@ -40,6 +40,7 @@ class Flow(nn.Module):
 
         self.dims_in = dims_in
         self.dims_c = dims_c
+        self.channels = channels
         self.uniform_latent = uniform_latent
         self.min_bin_width = min_bin_width
         self.min_bin_height = min_bin_height
@@ -120,6 +121,25 @@ class Flow(nn.Module):
                 )
             )
 
+    def apply_mappings(
+        self, x: torch.Tensor, inverse: bool, channel: list[int] | int | None
+    ) -> tuple[torch.Tensor, torch.Tensor | float]:
+        if self.mapping is None:
+            return x, 0.0
+
+        if isinstance(self.mapping, list):
+            if isinstance(channel, int):
+                mapping = self.mapping[channel]
+                x, map_jac = mapping(x, inverse)
+            else:
+                map_x = []
+                map_jac = []
+                for xc, mapping in zip(x.split(channel, dim=0), self.mapping):
+                    xm, jm = mapping(xc, inverse)
+                    map_x.append(xm)
+                    map_jac.append(jm)
+
+
     def transform(
         self,
         x: torch.Tensor,
@@ -127,40 +147,20 @@ class Flow(nn.Module):
         inverse: bool = False,
         channel: torch.Tensor | list[int] | int | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        channel_perm = None
         if isinstance(channel, torch.Tensor):
-            channel, channel_perm = torch.sort(channel)
+            channel_perm = torch.argsort(channel)
             x = x[channel_perm]
             c = c[channel_perm]
-            channel_sizes = ...
-            channel_id = -1
-        elif isinstance(channel, list):
-            channel_sizes = channel
-        elif isinstance(channel, int):
-
-        channel_perm = None
-        if channel_equal:
-            channel_sizes = []
-            channel_id = -2
-        elif channel_sizes is not None:
-            channel_id = -1
-        elif isinstance(channel, int):
-            channel_id = channel
-        elif channel is not None:
-            channel_id = -1
-            if not channel_sorted:
-                channel_perm = torch.argsort(channel)
-                x = x[channel_perm]
-                c = c[channel_perm]
-                channel = channel[channel_perm]
-            _, channel_sizes = torch.unique(channel, return_counts=True)
+            channel = channel.bincount(minlength=self.channels).tolist()
+        else:
+            channel_perm = None
 
         jac = 0.0
 
-        if channel_sizes is None:
+        if self.channels is None:
             channel_args = ()
         else:
-            channel_args = (channel_sizes, channel_id)
+            channel_args = (channel, )
 
         batch_size = x.shape[0]
         if inverse:
@@ -183,6 +183,8 @@ class Flow(nn.Module):
             )
             x[:, inv_mask] = x_out
             jac += block_jac.sum(dim=1)
+
+
 
         if channel_perm is not None:
             channel_perm_inv = torch.argsort(channel_perm)
