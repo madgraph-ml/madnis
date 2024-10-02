@@ -128,6 +128,17 @@ class Flow(nn.Module):
         channel: torch.Tensor | list[int] | int | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         channel_perm = None
+        if isinstance(channel, torch.Tensor):
+            channel, channel_perm = torch.sort(channel)
+            x = x[channel_perm]
+            c = c[channel_perm]
+            channel_sizes = ...
+            channel_id = -1
+        elif isinstance(channel, list):
+            channel_sizes = channel
+        elif isinstance(channel, int):
+
+        channel_perm = None
         if channel_equal:
             channel_sizes = []
             channel_id = -2
@@ -171,10 +182,7 @@ class Flow(nn.Module):
                 self.min_bin_derivative,
             )
             x[:, inv_mask] = x_out
-            if inverse:
-                jac -= block_jac.sum(dim=1)
-            else:
-                jac += block_jac.sum(dim=1)
+            jac += block_jac.sum(dim=1)
 
         if channel_perm is not None:
             channel_perm_inv = torch.argsort(channel_perm)
