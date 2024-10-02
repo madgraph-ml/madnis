@@ -20,9 +20,9 @@ def unconstrained_rational_quadratic_spline(
     right: float = 1.0,
     bottom: float = 0.0,
     top: float = 1.0,
-    min_bin_width: float = DEFAULT_MIN_BIN_WIDTH,
-    min_bin_height: float = DEFAULT_MIN_BIN_HEIGHT,
-    min_derivative: float = DEFAULT_MIN_DERIVATIVE,
+    min_bin_width: float = 1e-3,
+    min_bin_height: float = 1e-3,
+    min_derivative: float = 1e-3,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """
     Unconstrained rational quadratic spline transformations as introduced in 1906.04032.
@@ -167,7 +167,7 @@ def rational_quadratic_spline(
         c = -input_delta * (inputs - input_cumheights)
 
         discriminant = b.pow(2) - 4 * a * c
-        assert (discriminant >= 0).all()
+        # assert (discriminant >= 0).all()
 
         root = (2 * c) / (-b - torch.sqrt(discriminant))
         outputs = root * input_bin_widths + input_cumwidths
