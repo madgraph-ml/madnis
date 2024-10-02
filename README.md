@@ -19,9 +19,9 @@ It containes modules to construct a machine-learning based Monte Carlo integrato
 
 ```sh
 # clone the repository
-git clone https://github.com/madgraph-ml/MadNIS.git
+git clone https://github.com/madgraph-ml/madnis.git
 # then install in dev mode
-cd MadNIS
+cd madnis
 pip install --editable .
 ```
 
