@@ -169,6 +169,17 @@ class Flow(nn.Module):
     def apply_mappings(
         self, x: torch.Tensor, inverse: bool, channel: list[int] | int | None
     ) -> tuple[torch.Tensor, torch.Tensor | float]:
+        """
+        Applies the single mapping or channel-wise mappings to the input data
+
+        Args:
+            x:
+            inverse:
+            channel:
+        Returns:
+            y:
+            jac:
+        """
         if self.mapping is None:
             return x, 0.0
 
