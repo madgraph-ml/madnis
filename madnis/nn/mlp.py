@@ -53,12 +53,12 @@ class StackedMLP(nn.Module):
             input_dim = units
         layer_dims.append((input_dim, features_out))
 
-        self.weights = nn.ParameterList([
-            torch.empty((n_channels, n_out, n_in)) for n_in, n_out in layer_dims
-        ])
-        self.biases = nn.ParameterList([
-            torch.empty((n_channels, n_out)) for n_in, n_out in layer_dims
-        ])
+        self.weights = nn.ParameterList(
+            [torch.empty((n_channels, n_out, n_in)) for n_in, n_out in layer_dims]
+        )
+        self.biases = nn.ParameterList(
+            [torch.empty((n_channels, n_out)) for n_in, n_out in layer_dims]
+        )
         self.reset_parameters()
 
     def reset_parameters(self):
@@ -82,8 +82,8 @@ class StackedMLP(nn.Module):
         batch_size = x.shape[0]
         x = x.reshape(self.channels, batch_size // self.channels, x.shape[1])
         for w, b in zip(self.weights[:-1], self.biases[:-1]):
-            x = self.activation(torch.baddbmm(b[:,None,:], x, w.transpose(1,2)))
-        return torch.baddbmm(b[:,None,:], x, w.transpose(1,2))
+            x = self.activation(torch.baddbmm(b[:, None, :], x, w.transpose(1, 2)))
+        return torch.baddbmm(b[:, None, :], x, w.transpose(1, 2))
 
     def forward(
         self,
@@ -91,9 +91,9 @@ class StackedMLP(nn.Module):
         channel: list[int] | int | None = None,
     ) -> torch.Tensor:
         if isinstance(channel, list):
-            return torch.cat([
-                self.forward_single(xi, i) for i, xi in enumerate(x.split(channel, dim=0))
-            ], dim=0)
+            return torch.cat(
+                [self.forward_single(xi, i) for i, xi in enumerate(x.split(channel, dim=0))], dim=0
+            )
         elif isinstance(channel, int):
             return self.forward_single(x, channel)
         else:
