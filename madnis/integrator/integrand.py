@@ -1,0 +1,2 @@
+class Integrand:
+    pass

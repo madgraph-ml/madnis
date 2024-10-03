@@ -1,3 +1,4 @@
+from collections.abc import Iterable
 from dataclasses import astuple, dataclass
 from typing import Callable
 
@@ -44,7 +45,7 @@ class SampleBatch:
         return SampleBatch(*(None if field is None else func(field) for field in self))
 
     @staticmethod
-    def cat(batches: list["SampleBatch"]):
+    def cat(batches: Iterable["SampleBatch"]):
         return SampleBatch(
             *(None if item[0] is None else torch.cat(item, dim=0) for item in zip(*batches))
         )
