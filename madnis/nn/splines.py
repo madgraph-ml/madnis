@@ -43,8 +43,8 @@ def unconstrained_rational_quadratic_spline(
         min_bin_height: minimal bin height
         min_derivative: minimal derivative at bin edges
     Returns:
-        outputs: output tensor, shape (..., )
-        logabsdet: log-Jacobian determinant of the transformation
+        tuple containing the output tensor and the log-Jacobian determinants
+        of the transformation, both with shape (..., )
     """
     if not inverse:
         inside_interval_mask = torch.all((inputs >= left) & (inputs <= right), dim=-1)
@@ -113,8 +113,8 @@ def rational_quadratic_spline(
         min_bin_height: minimal bin height
         min_derivative: minimal derivative at bin edges
     Returns:
-        outputs: output tensor, shape (..., )
-        logabsdet: log-Jacobian determinant of the transformation
+        tuple containing the output tensor and the log-Jacobian determinants
+        of the transformation, both with shape (..., )
     """
     num_bins = unnormalized_widths.shape[-1]
 

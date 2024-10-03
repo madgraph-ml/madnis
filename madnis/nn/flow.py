@@ -43,8 +43,6 @@ class Flow(nn.Module):
         min_bin_derivative: float = 1e-3,
     ):
         """
-        Constructs a normalizing flow with the given hyperparameters.
-
         Args:
             dims_in: input dimension
             dims_c: condition dimension
@@ -166,19 +164,20 @@ class Flow(nn.Module):
                 subnet_constructor(dims_cond + dims_c, (dims_in - dims_cond) * (3 * bins + 1))
             )
 
-    def apply_mappings(
+    def _apply_mappings(
         self, x: torch.Tensor, inverse: bool, channel: list[int] | int | None
     ) -> tuple[torch.Tensor, torch.Tensor | float]:
         """
         Applies the single mapping or channel-wise mappings to the input data
 
         Args:
-            x:
-            inverse:
-            channel:
+            x: input data, shape (n, dims_in)
+            inverse: if True, use inverted mapping (i.e. the sampling direction)
+            channel: list of number of samples per channel, channel index, or None for no channels
+                or equally sized channels
         Returns:
-            y:
-            jac:
+            tuple containing the transformed values with shape (n, dims_in), and log Jacobian
+            determinants with shape (n, ) of the mapping
         """
         if self.mapping is None:
             return x, 0.0
@@ -202,6 +201,25 @@ class Flow(nn.Module):
         inverse: bool = False,
         channel: torch.Tensor | list[int] | int | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Transforms the input data into the latent space or back.
+
+        Args:
+            x: input data, shape (n, dims_in)
+            c: condition, shape (n, dims_c) or None for an unconditional flow
+            inverse: if True, use inverted transformation (i.e. the sampling direction)
+            channel: encodes the channel of the samples. It must have one of the following types:
+
+                - `Tensor`: integer tensor of shape (n, ), containing the channel index for every
+                  input sample;
+                - `list`: list of integers, specifying the number of samples in each channel;
+                - `int`: integer specifying a single channel containing all the samples;
+                - `None`: used in the single-channel case or to indicate that all channels contain
+                  the same number of samples in the multi-channel case.
+        Returns:
+            tuple containing the transformed values with shape (n, dims_in), and log Jacobian
+            determinants with shape (n, ) of the transformation
+        """
         if isinstance(channel, torch.Tensor):
             channel_perm = torch.argsort(channel)
             x = x[channel_perm]
@@ -214,7 +232,7 @@ class Flow(nn.Module):
         if inverse:
             jac = 0.0
         else:
-            x, jac = self.apply_mappings(x, True, channel)
+            x, jac = self._apply_mappings(x, True, channel)
 
         if self.channels is None:
             channel_args = ()
@@ -251,7 +269,7 @@ class Flow(nn.Module):
             jac += block_jac.sum(dim=1)
 
         if inverse:
-            x, map_jac = self.apply_mappings(x, False, channel)
+            x, map_jac = self._apply_mappings(x, False, channel)
             jac += map_jac
 
         if channel_perm is not None:
@@ -261,7 +279,15 @@ class Flow(nn.Module):
 
         return x, jac
 
-    def latent_log_prob(self, z: torch.Tensor):
+    def _latent_log_prob(self, z: torch.Tensor):
+        """
+        Computes the log-probability of a vector in latent space.
+
+        Args:
+            z: latent space vector, shape (n, dims_in)
+        Returns:
+            log-probabilities, shape (n, )
+        """
         if self.uniform_latent:
             return 0.0
         else:
@@ -274,8 +300,27 @@ class Flow(nn.Module):
         channel: torch.Tensor | list[int] | int | None = None,
         return_latent: bool = False,
     ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+        """
+        Computes the log-probabilities of the input data.
+
+        Args:
+            x: input data, shape (n, dims_in)
+            c: condition, shape (n, dims_c) or None for an unconditional flow
+            channel: encodes the channel of the samples. It must have one of the following types:
+
+                - `Tensor`: integer tensor of shape (n, ), containing the channel index for every
+                  input sample;
+                - `list`: list of integers, specifying the number of samples in each channel;
+                - `int`: integer specifying a single channel containing all the samples;
+                - `None`: used in the single-channel case or to indicate that all channels contain
+                  the same number of samples in the multi-channel case.
+            return_latent: if True, also return the latent space vector
+        Returns:
+            log-probabilities with shape (n, ). If `return_latent` is True, it also returns the
+            latent space vector with shape (n, dims_in).
+        """
         z, jac = self.transform(x, c, False, channel)
-        log_prob = self.latent_log_prob(z) + jac
+        log_prob = self._latent_log_prob(z) + jac
         if return_latent:
             return log_prob, z
         else:
@@ -288,6 +333,25 @@ class Flow(nn.Module):
         channel: torch.Tensor | list[int] | int | None = None,
         return_latent: bool = False,
     ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+        """
+        Computes the probabilities of the input data.
+
+        Args:
+            x: input data, shape (n, dims_in)
+            c: condition, shape (n, dims_c) or None for an unconditional flow
+            channel: encodes the channel of the samples. It must have one of the following types:
+
+                - `Tensor`: integer tensor of shape (n, ), containing the channel index for every
+                  input sample;
+                - `list`: list of integers, specifying the number of samples in each channel;
+                - `int`: integer specifying a single channel containing all the samples;
+                - `None`: used in the single-channel case or to indicate that all channels contain
+                  the same number of samples in the multi-channel case.
+            return_latent: if True, also return the latent space vector
+        Returns:
+            probabilities with shape (n, ). If `return_latent` is True, it also returns the
+            latent space vector with shape (n, dims_in).
+        """
         log_prob, z = self.log_prob(x, c, channel, True)
         if return_latent:
             return log_prob.exp(), z
@@ -305,13 +369,41 @@ class Flow(nn.Module):
         device: torch.device | None = None,
         dtype: torch.dtype | None = None,
     ) -> torch.Tensor | tuple[torch.Tensor, ...]:
+        """
+        Draws samples from the probability distribution encoded by the flow.
+
+        Args:
+            n: number of samples. Only required if no condition is given.
+            c: condition, shape (n, dims_c) or None for an unconditional flow
+            channel: encodes the channel of the samples. It must have one of the following types:
+
+                - `Tensor`: integer tensor of shape (n, ), containing the channel index for every
+                  input sample;
+                - `list`: list of integers, specifying the number of samples in each channel;
+                - `int`: integer specifying a single channel containing all the samples;
+                - `None`: used in the single-channel case or to indicate that all channels contain
+                  the same number of samples in the multi-channel case.
+            return_log_prob: if True, also return the log-probabilities
+            return_prob: if True, also return the probabilities
+            return_latent: if True, also return the latent space vector
+            device: device of the returned tensor. Only required if no condition is given.
+            dtype: dtype of the returned tensor. Only required if no condition is given.
+        Returns:
+            samples with shape (n, dims_in). Depending on the arguments `return_log_prob`,
+            `return_prob` and `return_latent`, this function will also return the log-probabilities
+            with shape (n, ), the probabilities with shape (n, ) and the latent space vector with
+            shape (n, dims_in).
+        """
         if n is None:
             n = len(c)
-        options = {} if c is None else {"device": c.device, "dtype": c.dtype}
-        if device is not None:
-            options["device"] = device
-        if dtype is not None:
-            options["dtype"] = dtype
+        if c is None:
+            options = {}
+            if device is not None:
+                options["device"] = device
+            if dtype is not None:
+                options["dtype"] = dtype
+        else:
+            options = {"device": c.device, "dtype": c.dtype}
 
         if self.uniform_latent:
             z = torch.rand((n, self.dims_in), **options)
@@ -319,7 +411,7 @@ class Flow(nn.Module):
             z = torch.randn((n, self.dims_in), **options)
         x, jac = self.transform(z, c, True, channel)
         if return_log_prob or return_prob:
-            log_prob_latent = self.latent_log_prob(z)
+            log_prob_latent = self._latent_log_prob(z)
             log_prob = log_prob_latent + jac
 
         extra_returns = []
