@@ -6,7 +6,7 @@ import torch.nn as nn
 
 from ..nn import MLP, Flow
 from .integrand import Integrand
-from .samples import SampleBatch, SampleBuffer
+from .samples import Buffer, SampleBatch
 
 
 @dataclass
@@ -121,7 +121,7 @@ class Integrator(nn.Module):
         self.variance_history_length = variance_history_length
         self.drop_zero_integrands = drop_zero_integrands
         self.batch_size_threshold = batch_size_threshold
-        self.buffer = SampleBuffer(buffer_capacity)
+        self.buffer = Buffer(buffer_capacity)
         self.buffered_steps = buffered_steps
         self.max_stored_channel_weights = (
             None
@@ -138,9 +138,9 @@ class Integrator(nn.Module):
         if dtype is not None:
             self.to(dtype)
 
-    ###################################################################################################
-    # OLD SHIT BEGINS HERE                                                                            #
-    ###################################################################################################
+    ###############################################################################################
+    # OLD SHIT BEGINS HERE                                                                        #
+    ###############################################################################################
 
     def _store_samples(
         self,
@@ -504,9 +504,9 @@ class Integrator(nn.Module):
             losses.append(loss)
         return np.nanmean(losses, axis=0)
 
-    ###################################################################################################
-    # OLD SHIT ENDS HERE                                                                              #
-    ###################################################################################################
+    ###############################################################################################
+    # OLD SHIT ENDS HERE                                                                          #
+    ###############################################################################################
 
     def _get_channels(
         self,
