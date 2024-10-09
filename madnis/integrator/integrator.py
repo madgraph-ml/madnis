@@ -147,7 +147,7 @@ class Integrator(nn.Module):
         super().__init__()
 
         if not isinstance(integrand, Integrand):
-            integrand = Integrand(dims, integrand)
+            integrand = Integrand(integrand, dims)
         if flow is None:
             flow = Flow(
                 dims_in=integrand.y_dim, channels=integrand.channels, **flow_kwargs
