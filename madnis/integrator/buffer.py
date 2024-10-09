@@ -1,74 +1,45 @@
-from collections.abc import Iterable
-from dataclasses import astuple, dataclass
 from typing import Callable
 
 import torch
 import torch.nn as nn
 
 
-@dataclass
-class SampleBatch:
-    """
-    Class to store a batch of samples
-
-    Args:
-        x:
-            Samples generated either uniformly or by the flow with shape (nsamples, ndim)
-        y:
-            Samples after transformation through analytic mappings or from the call to
-            the integrand (if integrand_has_channels is True) with shape (nsamples, nfeatures)
-        q_sample:
-            Test probability of all mappings (analytic + flow) with shape (nsamples,)
-        func_vals:
-            True probability with shape (nsamples,)
-        channels:
-            Tensor encoding which channel to use with shape (nsamples,)
-        alphas_prior:
-            Prior for the channel weights with shape (nsamples, nchannels)
-        z:
-            Random number/latent space point used to generate the sample, shape (nsamples, ndim)
-    """
-
-    x: torch.Tensor
-    y: torch.Tensor
-    q_sample: torch.Tensor
-    func_vals: torch.Tensor
-    channels: torch.Tensor
-    alphas_prior: torch.Tensor | None = None
-    z: torch.Tensor | None = None
-    alpha_channel_indices: torch.Tensor | None = None
-
-    def __iter__(self):
-        return iter(astuple(self))
-
-    def map(self, func: Callable[[torch.Tensor], torch.Tensor]):
-        return SampleBatch(*(None if field is None else func(field) for field in self))
-
-    @staticmethod
-    def cat(batches: Iterable["SampleBatch"]):
-        return SampleBatch(
-            *(
-                None if item[0] is None else torch.cat(item, dim=0)
-                for item in zip(*batches)
-            )
-        )
-
-
 class Buffer(nn.Module):
-    def __init__(self, capacity: int, shapes: list[tuple[int, ...]]):
+    """
+    Circular buffer for multiple tensors with different shapes. The class is a torch.nn.Module to
+    allow for simple storage.
+    """
+
+    def __init__(
+        self, capacity: int, shapes: list[tuple[int, ...]], persistent: bool = True
+    ):
+        """
+        Args:
+            capacity: maximum number of samples stored in the buffer
+            shapes: shapes of the tensors to be stored, without batch dimension. If a shape is
+                None, no tensor is stored at that position. This allows for simpler handling of
+                optional stored fields.
+            persistent: if True, the content of the buffer is part of the module's state_dict
+        """
         super().__init__()
         self.keys = []
         for i, shape in enumerate(shapes):
             key = f"buffer{i}"
             self.register_buffer(
-                key, None if shape is None else torch.zeros(capacity, *shape)
+                key,
+                None if shape is None else torch.zeros(capacity, *shape),
+                persistent,
             )
             self.keys.append(key)
         self.capacity = capacity
         self.size = 0
         self.store_index = 0
 
-    def _batch_slices(self, batch_size: int):
+    def _batch_slices(self, batch_size: int) -> slice:
+        """
+        Returns slices that split up the buffer into batches of at most ``batch_size``, respecting
+        the buffer size and periodic boundary.
+        """
         start = self.store_index
         while start < self.size:
             stop = min(start + batch_size, self.size)
@@ -80,15 +51,37 @@ class Buffer(nn.Module):
             yield slice(start, stop)
             start = stop
 
-    def _buffer_fields(self):
+    def _buffer_fields(self) -> torch.Tensor | None:
+        """
+        Iterates over the buffered tensors, without removing the padding if the buffer is not full.
+
+        Returns:
+            The buffered tensors, or None if a tensor was initialized with shape None
+        """
         for key in self.keys:
             yield getattr(self, key)
 
-    def __iter__(self):
+    def __iter__(self) -> torch.Tensor | None:
+        """
+        Iterates over the buffered tensors
+
+        Returns:
+            The buffered tensors, or None if a tensor was initialized with shape None
+        """
         for key in self.keys:
-            yield getattr(self, key)[: self.size]
+            buffer = getattr(self, key)
+            yield None if buffer is None else buffer[: self.size]
 
     def store(self, *tensors: torch.Tensor | None):
+        """
+        Adds the given tensors to the buffer. If the buffer is full, the oldest stored samples are
+        overwritten.
+
+        Args:
+            tensors: samples to be stored. The shapes of the tensors after the batch dimension must
+                match the shapes given during initialization. The argument can be None if the
+                corresponding shape was None during initialization.
+        """
         store_slice1 = None
         for buffer, data in zip(self._buffer_fields(), tensors):
             if data is None:
@@ -116,6 +109,15 @@ class Buffer(nn.Module):
         predicate: Callable[[tuple[torch.Tensor | None, ...]], torch.Tensor],
         batch_size: int = 100000,
     ):
+        """
+        Removes samples from the buffer that do not fulfill the criterion given by the predicate
+        function.
+
+        Args:
+            predicate: function that returns a mask for a batch of samples, given a tuple with
+                all the buffered fields as argument
+            batch_size: maximal batch size to limit memory usage
+        """
         masks = []
         masked_size = 0
         for batch_slice in self._batch_slices(batch_size):
@@ -137,7 +139,15 @@ class Buffer(nn.Module):
         self.size = masked_size
         self.store_index = masked_size % self.capacity
 
-    def sample(self, count: int):
+    def sample(self, count: int) -> list[torch.Tensor | None]:
+        """
+        Returns a batch of samples drawn from the buffer without replacement.
+
+        Args:
+            count: number of samples
+        Returns:
+            samples drawn from the buffer
+        """
         weights = next(b for b in self._buffer_fields() if b is not None).new_ones(
             self.size
         )

@@ -1,12 +1,13 @@
-from dataclasses import dataclass
+from collections.abc import Iterable
+from dataclasses import astuple, dataclass
 from typing import Any, Callable
 
 import torch
 import torch.nn as nn
 
 from ..nn import MLP, Flow
+from .buffer import Buffer
 from .integrand import Integrand
-from .samples import Buffer, SampleBatch
 
 
 @dataclass
@@ -18,6 +19,54 @@ class TrainingStatus:
     step: int
     loss: float
     dropped_channels: int
+
+
+@dataclass
+class SampleBatch:
+    """
+    Class to store a batch of samples
+
+    Args:
+        x:
+            Samples generated either uniformly or by the flow with shape (nsamples, ndim)
+        y:
+            Samples after transformation through analytic mappings or from the call to
+            the integrand (if integrand_has_channels is True) with shape (nsamples, nfeatures)
+        q_sample:
+            Test probability of all mappings (analytic + flow) with shape (nsamples,)
+        func_vals:
+            True probability with shape (nsamples,)
+        channels:
+            Tensor encoding which channel to use with shape (nsamples,)
+        alphas_prior:
+            Prior for the channel weights with shape (nsamples, nchannels)
+        z:
+            Random number/latent space point used to generate the sample, shape (nsamples, ndim)
+    """
+
+    x: torch.Tensor
+    y: torch.Tensor
+    q_sample: torch.Tensor
+    func_vals: torch.Tensor
+    channels: torch.Tensor
+    alphas_prior: torch.Tensor | None = None
+    z: torch.Tensor | None = None
+    alpha_channel_indices: torch.Tensor | None = None
+
+    def __iter__(self):
+        return iter(astuple(self))
+
+    def map(self, func: Callable[[torch.Tensor], torch.Tensor]):
+        return SampleBatch(*(None if field is None else func(field) for field in self))
+
+    @staticmethod
+    def cat(batches: Iterable["SampleBatch"]):
+        return SampleBatch(
+            *(
+                None if item[0] is None else torch.cat(item, dim=0)
+                for item in zip(*batches)
+            )
+        )
 
 
 class Integrator(nn.Module):
@@ -121,7 +170,7 @@ class Integrator(nn.Module):
         self.variance_history_length = variance_history_length
         self.drop_zero_integrands = drop_zero_integrands
         self.batch_size_threshold = batch_size_threshold
-        self.buffer = Buffer(buffer_capacity)
+        self.buffer = Buffer(buffer_capacity, persistent=False)
         self.buffered_steps = buffered_steps
         self.max_stored_channel_weights = (
             None
@@ -436,20 +485,22 @@ class Integrator(nn.Module):
         nsamples: int,
         integral: bool = False,
     ):
-        """Perform one step of integration and improve the sampling.
-        Args:
-            nsamples (int):
-                Number of samples to be taken in a training step
-            integral (bool, optional):
-                return the integral value. Defaults to False.
-        Returns:
-            loss:
-                Value of the loss function for this step
-            integral (optional):
-                Estimate of the integral value
-            uncertainty (optional):
-                Integral statistical uncertainty
-        """
+        # """
+        # Perform one step of integration and improve the sampling.
+
+        # Args:
+        #    nsamples (int):
+        #        Number of samples to be taken in a training step
+        #    integral (bool, optional):
+        #        return the integral value. Defaults to False.
+        # Returns:
+        #    loss:
+        #        Value of the loss function for this step
+        #    integral (optional):
+        #        Estimate of the integral value
+        #    uncertainty (optional):
+        #        Integral statistical uncertainty
+        # """
 
         # Sample from flow and update
         channels = self._get_channels(
