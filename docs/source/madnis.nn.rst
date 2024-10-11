@@ -9,5 +9,4 @@ Module contents
 
 .. automodule:: madnis.nn
    :members:
-   :undoc-members:
    :show-inheritance:
