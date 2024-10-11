@@ -1,11 +1,14 @@
 import itertools
+import signal
 import warnings
 from collections.abc import Iterable
 from dataclasses import astuple, dataclass
 from typing import Any, Callable
 
+import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from ..nn import MLP, Flow
 from .buffer import Buffer
@@ -16,10 +19,19 @@ from .integrand import Integrand
 class TrainingStatus:
     """
     Contains the MadNIS training status to pass it to a callback function.
+
+    Args:
+        step: optimization step
+        online_loss: loss from the optimization step on new samples
+        buffered_loss: average loss from the optimization steps on buffered samples
+        learning_rate: current learning rate if learning rate scheduler is present
+        dropped_channels: number of channels dropped after this optimization step
     """
 
     step: int
-    loss: float
+    online_loss: float
+    buffered_loss: float | None
+    learning_rate: float | None
     dropped_channels: int
 
 
@@ -95,6 +107,7 @@ class Integrator(nn.Module):
         cwnet_kwargs: dict[str, Any] = {},
         loss: Callable = None,  # TODO
         optimizer: torch.optim.Optimizer | None = None,
+        batch_size: int = 1024,
         learning_rate: float = 1e-3,
         scheduler: torch.optim.lr_scheduler.LRScheduler | None = None,
         uniform_channel_ratio: float = 1.0,
@@ -102,6 +115,7 @@ class Integrator(nn.Module):
         drop_zero_integrands: bool = False,
         batch_size_threshold: float = 0.5,
         buffer_capacity: int = 0,
+        minimum_buffer_size: int = 50,
         buffered_steps: int = 0,
         max_stored_channel_weights: int | None = None,
         channel_dropping_threshold: float = 0.0,
@@ -128,6 +142,7 @@ class Integrator(nn.Module):
                 arguments are passed to the `MLP` constructor.
             loss: Loss function used for training.
             optimizer: optimizer for the training. If None, the Adam optimizer is used.
+            batch_size: Training batch size
             learning_rate: learning rate used for the Adam optimizer
             scheduler: learning rate scheduler for the training. If None, a constant learning rate
                 is used.
@@ -141,6 +156,7 @@ class Integrator(nn.Module):
             batch_size_threshold: If drop_zero_integrands is True, new samples are drawn until the
                 number of samples is at least batch_size_threshold * batch_size.
             buffer_capacity: number of samples that are stored for buffered training
+            minimum_buffer_size: minimal size of the buffer to run buffered training
             buffered_steps: number of optimization steps on buffered samples after every online
                 training step
             max_stored_channel_weights: number of prior channel weights that are buffered for each
@@ -180,7 +196,8 @@ class Integrator(nn.Module):
         self.drop_zero_integrands = drop_zero_integrands
         self.batch_size_threshold = batch_size_threshold
         if buffer_capacity > 0:
-            self.buffer = Buffer(buffer_capacity, persistent=False)
+            self.buffer = Buffer(buffer_capacity, ..., persistent=False)
+        self.minimum_buffer_size = minimum_buffer_size
         self.buffered_steps = buffered_steps
         self.max_stored_channel_weights = (
             None
@@ -306,21 +323,19 @@ class Integrator(nn.Module):
 
         n_rest = self.integrand.channels - self.max_stored_channel_weights
         alphas_prior_reduced = samples.alphas_prior
+        epsilon = torch.finfo(alphas_prior_reduced.dtype).eps
 
         # strategy 1: distribute difference to 1 evenly among non-stored channels
         # alphas_prior = torch.clamp(
         #    (1 - alphas_prior_reduced.sum(dim=1, keepdims=True)) / n_rest,
-        #    min=_EPSILON,
+        #    min=epsilon,
         # ).repeat(1, self.integrand.channels)
         # alphas_prior.scatter_(1, samples.alpha_channel_indices, alphas_prior_reduced)
         # return alphas_prior
 
-        # strategy 2: set non-stored channel alphas to _EPSILON, normalize again
-        alphas_prior = torch.full(
-            (alphas_prior_reduced.shape[0], self.integrand.channels),
-            _EPSILON,
-            device=alphas_prior_reduced.device,
-            dtype=alphas_prior_reduced.dtype,
+        # strategy 2: set non-stored channel alphas to epsilon, normalize again
+        alphas_prior = alphas_prior_reduced.new_full(
+            (alphas_prior_reduced.shape[0], self.integrand.channels), epsilon
         )
         alphas_prior.scatter_(1, samples.alpha_channel_indices, alphas_prior_reduced)
         return alphas_prior / alphas_prior.sum(dim=1, keepdims=True)
@@ -491,7 +506,7 @@ class Integrator(nn.Module):
                 x, prob = self.flow.sample(n, return_prob=True)
 
             weight, y, alphas_prior = self.integrand(x, channels)
-            batch = SampleBatch(x, y, prob, weight, channels, alphas_prior, z)
+            batch = SampleBatch(x, y, prob, weight, channels, alphas_prior)
 
             mask = True
             if train and self.drop_zero_integrands:

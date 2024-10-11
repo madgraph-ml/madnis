@@ -128,7 +128,10 @@ class Flow(nn.Module):
                 n_perms = int(np.ceil(np.log2(dims_in)))
                 condition_masks = (
                     torch.tensor(
-                        [[int(i) for i in np.binary_repr(i, n_perms)] for i in range(dims_in)]
+                        [
+                            [int(i) for i in np.binary_repr(i, n_perms)]
+                            for i in range(dims_in)
+                        ]
                     )
                     .flip(dims=(1,))
                     .bool()
@@ -154,14 +157,16 @@ class Flow(nn.Module):
                 for i in range(blocks):
                     condition_masks[i] = condition_masks[i][torch.randperm(dims_in)]
             else:
-                raise ValueError(f"Unknown permutation type {permutation}")
+                raise ValueError(f"Unknown permutation type {permutations}")
         self.condition_masks = condition_masks
 
         self.subnets = nn.ModuleList()
         for mask in self.condition_masks:
             dims_cond = torch.count_nonzero(mask)
             self.subnets.append(
-                subnet_constructor(dims_cond + dims_c, (dims_in - dims_cond) * (3 * bins + 1))
+                subnet_constructor(
+                    dims_cond + dims_c, (dims_in - dims_cond) * (3 * bins + 1)
+                )
             )
 
     def _apply_mappings(
@@ -250,7 +255,9 @@ class Flow(nn.Module):
             x_cond = x[:, mask]
             if c is not None:
                 x_cond = torch.cat((x_cond, c), dim=1)
-            subnet_out = subnet(x_cond, *channel_args).reshape((batch_size, x_trafo.shape[1], -1))
+            subnet_out = subnet(x_cond, *channel_args).reshape(
+                (batch_size, x_trafo.shape[1], -1)
+            )
             x_out, block_jac = unconstrained_rational_quadratic_spline(
                 x_trafo,
                 subnet_out[:, :, : self.bins],
@@ -418,7 +425,7 @@ class Flow(nn.Module):
         if return_log_prob:
             extra_returns.append(log_prob)
         if return_prob:
-            extra_returns.append(prob)
+            extra_returns.append(log_prob.exp())
         if return_latent:
             extra_returns.append(z)
         if len(extra_returns) > 0:

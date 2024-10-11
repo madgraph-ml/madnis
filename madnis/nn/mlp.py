@@ -1,7 +1,9 @@
+import math
 from typing import Callable
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 
 class MLP(nn.Module):
@@ -91,10 +93,10 @@ class StackedMLP(nn.Module):
         layer_dims.append((input_dim, features_out))
 
         self.weights = nn.ParameterList(
-            [torch.empty((n_channels, n_out, n_in)) for n_in, n_out in layer_dims]
+            [torch.empty((channels, n_out, n_in)) for n_in, n_out in layer_dims]
         )
         self.biases = nn.ParameterList(
-            [torch.empty((n_channels, n_out)) for n_in, n_out in layer_dims]
+            [torch.empty((channels, n_out)) for n_in, n_out in layer_dims]
         )
         self.reset_parameters()
 
@@ -141,7 +143,9 @@ class StackedMLP(nn.Module):
         x = x.reshape(self.channels, batch_size // self.channels, x.shape[1])
         for w, b in zip(self.weights[:-1], self.biases[:-1]):
             x = self.activation(torch.baddbmm(b[:, None, :], x, w.transpose(1, 2)))
-        return torch.baddbmm(b[:, None, :], x, w.transpose(1, 2)).reshape(batch_size, -1)
+        return torch.baddbmm(b[:, None, :], x, w.transpose(1, 2)).reshape(
+            batch_size, -1
+        )
 
     def forward(
         self,
@@ -163,7 +167,11 @@ class StackedMLP(nn.Module):
         """
         if isinstance(channel, list):
             return torch.cat(
-                [self._forward_single(xi, i) for i, xi in enumerate(x.split(channel, dim=0))], dim=0
+                [
+                    self._forward_single(xi, i)
+                    for i, xi in enumerate(x.split(channel, dim=0))
+                ],
+                dim=0,
             )
         elif isinstance(channel, int):
             return self._forward_single(x, channel)
