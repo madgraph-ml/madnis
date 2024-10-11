@@ -1,3 +1,5 @@
+import itertools
+import warnings
 from collections.abc import Iterable
 from dataclasses import astuple, dataclass
 from typing import Any, Callable
@@ -59,6 +61,13 @@ class SampleBatch:
     def map(self, func: Callable[[torch.Tensor], torch.Tensor]):
         return SampleBatch(*(None if field is None else func(field) for field in self))
 
+    def split(self, batch_size: int) -> SampleBatch:
+        for batch in zip(
+            itertools.repeat(None) if field is None else field.split(batch_size)
+            for field in self
+        ):
+            yield SampleBatch(*batch)
+
     @staticmethod
     def cat(batches: Iterable["SampleBatch"]):
         return SampleBatch(
@@ -87,7 +96,7 @@ class Integrator(nn.Module):
         loss: Callable = None,  # TODO
         optimizer: torch.optim.Optimizer | None = None,
         learning_rate: float = 1e-3,
-        scheduler: torch.optim.lr_scheduler._LRScheduler | None = None,
+        scheduler: torch.optim.lr_scheduler.LRScheduler | None = None,
         uniform_channel_ratio: float = 1.0,
         variance_history_length: int = 20,
         drop_zero_integrands: bool = False,
@@ -161,16 +170,17 @@ class Integrator(nn.Module):
             optimizer = torch.optim.Adam(parameters, learning_rate)
 
         self.integrand = integrand
+        self.multichannel = integrand.channels is not None
         self.flow = flow
         self.cwnet = cwnet
         self.optimizer = optimizer
         self.loss = loss
         self.scheduler = scheduler
         self.uniform_channel_ratio = uniform_channel_ratio
-        self.variance_history_length = variance_history_length
         self.drop_zero_integrands = drop_zero_integrands
         self.batch_size_threshold = batch_size_threshold
-        self.buffer = Buffer(buffer_capacity, persistent=False)
+        if buffer_capacity > 0:
+            self.buffer = Buffer(buffer_capacity, persistent=False)
         self.buffered_steps = buffered_steps
         self.max_stored_channel_weights = (
             None
@@ -180,6 +190,13 @@ class Integrator(nn.Module):
         )
         self.channel_dropping_threshold = channel_dropping_threshold
         self.channel_dropping_interval = channel_dropping_interval
+        if self.multichannel:
+            hist_shape = (self.integrand.channels,)
+            self.variance_history = Buffer(
+                variance_history_length, [hist_shape, hist_shape, hist_shape]
+            )
+        else:
+            self.variance_history = None
         self.step = 0
 
         if device is not None:
@@ -187,23 +204,193 @@ class Integrator(nn.Module):
         if dtype is not None:
             self.to(dtype)
 
-    ###############################################################################################
-    # OLD SHIT BEGINS HERE                                                                        #
-    ###############################################################################################
+    def _get_alphas(self, samples: SampleBatch) -> torch.Tensor:
+        """
+        Runs the channel weight network and returns the normalized channel weights, taking prior
+        channel weights and dropped channels into account.
 
-    def _store_samples(
+        Args:
+            samples: batch of samples
+        Returns:
+            channel weights, shape (n, channels)
+        """
+        if samples.alphas_prior is None:
+            log_alpha_prior = samples.x.new_zeros(
+                (samples.x.shape[0], self.integrand.channels)
+            )
+        else:
+            log_alpha_prior = self._restore_prior(samples).log()
+        log_alpha = log_alpha_prior + self.cwnet(samples.y)
+        alpha = torch.zeros_like(log_alpha)
+        alpha[:, self.active_channel_mask] = F.softmax(
+            log_alpha[:, self.active_channel_mask], dim=1, keepdim=True
+        )
+        return alpha
+
+    def _optimization_step(
         self,
         samples: SampleBatch,
-    ):
-        """Stores the generated samples and probabilites to re-use for the buffered training.
-        Args:
-            samples (SampleBatch):
-                Object containing a batch of samples
+    ) -> tuple[float, torch.Tensor | None, torch.Tensor | None, torch.Tensor | None]:
         """
-        if self.sample_capacity == 0:
+        Perform one optimization step of the networks for the given samples
+
+        Args:
+            samples: batch of samples
+        Returns:
+            A tuple containing
+
+              - value of the loss
+              - channel-wise means of the integral, shape (channels, )
+              - channel-wise variances of the integral, shape (channels, )
+              - channel-wise number of samples, shape (channels, )
+
+            The latter three values are None in the single-channel case
+        """
+        self.optimizer.zero_grad()
+        q_test = self.flow.prob(samples.x, channel=samples.channels)
+
+        if self.multichannel:
+            alphas = torch.gather(
+                self._get_alphas(samples), index=samples.channels[:, None], dim=1
+            )[:, 0]
+            f_all = (
+                alphas * samples.func_vals.abs()
+            )  # abs needed for non-positive integrands
+            f_div_q = f_all.detach() / samples.q_sample.detach()
+            counts = torch.bin_count(
+                samples.channels, minlength=self.integrand.channels
+            )
+            means = torch.bin_count(
+                samples.channels, weights=f_div_q, minlength=self.integrand.channels
+            ) / torch.maximum(counts, 1)
+            variances = (
+                torch.bin_count(
+                    samples.channels,
+                    weight=(f_div_q - means[samples.channels]).square(),
+                    minlength=self.integrand.channels,
+                )
+                / counts
+            )
+            f_true = f_all / means.sum()
+        else:
+            f_all = samples.func_vals.abs()
+            f_div_q = f_all.detach() / samples.q_sample.detach()
+            f_true = f_all / f_div_q.mean()
+            means = None
+            counts = None
+            variances = None
+
+        loss = self.loss_func(
+            samples.channels, f_true, q_test, q_sample=samples.q_sample
+        )
+        if loss.isnan().item():
+            warnings.warn("nan batch: skipping optimization")
+        else:
+            loss.backward()
+            self.optimizer.step()
+
+        return loss.item(), means, variances, counts
+
+    def _restore_prior(self, samples: SampleBatch) -> torch.Tensor:
+        """
+        Restores the full prior channel weights if only the largest channel weights and their
+        indices were saved.
+
+        Args:
+            samples: batch of samples
+        Returns:
+            Tensor of prior channel weights with shape (n, channels)
+        """
+        if samples.alpha_channel_indices is None:
+            return samples.alphas_prior
+
+        n_rest = self.integrand.channels - self.max_stored_channel_weights
+        alphas_prior_reduced = samples.alphas_prior
+
+        # strategy 1: distribute difference to 1 evenly among non-stored channels
+        # alphas_prior = torch.clamp(
+        #    (1 - alphas_prior_reduced.sum(dim=1, keepdims=True)) / n_rest,
+        #    min=_EPSILON,
+        # ).repeat(1, self.integrand.channels)
+        # alphas_prior.scatter_(1, samples.alpha_channel_indices, alphas_prior_reduced)
+        # return alphas_prior
+
+        # strategy 2: set non-stored channel alphas to _EPSILON, normalize again
+        alphas_prior = torch.full(
+            (alphas_prior_reduced.shape[0], self.integrand.channels),
+            _EPSILON,
+            device=alphas_prior_reduced.device,
+            dtype=alphas_prior_reduced.dtype,
+        )
+        alphas_prior.scatter_(1, samples.alpha_channel_indices, alphas_prior_reduced)
+        return alphas_prior / alphas_prior.sum(dim=1, keepdims=True)
+
+    def _get_variance_weights(self, expect_full_history=True) -> torch.Tensor:
+        """
+        Uses the list of saved variances to compute the contribution of each channel for
+        stratified sampling.
+
+        Args:
+            expect_full_history: If True, the variance history has to be full, otherwise uniform
+                weights are returned.
+        Returns:
+            Weights for sampling the channels with shape (channels,)
+        """
+        min_len = self.variance_history.capacity if expect_full_history else 1
+        if self.variance_history.size < min_len:
+            return torch.ones(self.n_channels)
+        var_hist, _, count_hist = self.variance_history
+        count_hist = torch.where(var_hist.isnan(), np.nan, count_hist)
+        hist_weights = count_hist / count_hist.nansum(dim=0)
+        return torch.nansum(hist_weights * var_hist, dim=0).sqrt()
+
+    def _disable_unused_channels(self) -> int:
+        """
+        Determines channels with a total relative contribution below
+        ``channel_dropping_threshold``, disables them and removes them from the buffer.
+
+        Returns:
+            Number of channels that were disabled
+        """
+        if self.channel_dropping_threshold == 0.0:
+            return 0
+        if (self.steps + 1) % self.channel_dropping_interval != 0:
+            return 0
+
+        _, mean_hist, count_hist = self.variance_history
+        mean_hist = torch.nan_to_num(mean_hist)
+        hist_weights = count_hist / count_hist.sum(dim=0)
+        channel_integrals = torch.nansum(hist_weights * mean_hist, dim=0)
+        channel_rel_integrals = channel_integrals / channel_integrals.sum()
+        cri_sort, cri_argsort = torch.sort(channel_rel_integrals)
+        n_irrelevant = torch.count_nonzero(
+            cri_sort.cumsum(dim=0) < self.channel_dropping_threshold
+        )
+        n_disabled = torch.count_nonzero(
+            self.active_channels_mask[cri_argsort[:n_irrelevant]]
+        )
+        self.active_channels_mask[cri_argsort[:n_irrelevant]] = False
+        self.buffer.filter(
+            lambda batch: self.active_channels_mask[SampleBatch(*batch).channels]
+        )
+        return n_disabled
+
+    def _store_samples(self, samples: SampleBatch):
+        """
+        Stores the generated samples and probabilites for reuse during buffered training. If
+        ``max_stored_channel_weights`` is set, the largest channel weights are determined and only
+        those and their weights are stored.
+
+        Args:
+            samples: Object containing a batch of samples
+        """
+        if self.buffer is None:
             return
 
-        if self.max_stored_alphas is not None and samples.alphas_prior is not None:
+        if (
+            self.max_stored_channel_weights is not None
+            and self.integrand.channel_weight_prior
+        ):
             # Hack to ensure that the alpha for the channel that the sample was generated with
             # is always stored
             alphas_prior_mod = torch.scatter(
@@ -218,346 +405,14 @@ class Integrator(nn.Module):
             largest_alphas[:, 0] = torch.gather(
                 samples.alphas_prior, dim=1, index=samples.channels[:, None]
             )[:, 0]
-            samples.alphas_prior = largest_alphas[:, : self.max_stored_alphas].clone()
+            samples.alphas_prior = largest_alphas[
+                :, : self.max_stored_channel_weights
+            ].clone()
             samples.alpha_channel_indices = alpha_indices[
-                :, : self.max_stored_alphas
+                :, : self.max_stored_channel_weights
             ].clone()
 
-        self.stored_samples.append(samples)
-        del self.stored_samples[: -self.sample_capacity]
-
-    def _get_integral_and_alphas(
-        self,
-        samples: SampleBatch,
-    ):
-        """Return the weighted integrand and the channel weights
-        Args:
-            samples (SampleBatch):
-                Object containing a batch of samples
-        Returns:
-            integrand (torch.Tensor):
-                True probability weighted by alpha / qsample (nsamples,)
-            alphas (torch.Tensor):
-                Channel weights with shape (nsamples, nchannels)
-        """
-        _, _, alphas = self._get_probs_alphas(samples)
-        channel_alphas = torch.gather(alphas, index=samples.channels[:, None], dim=1)[
-            :, 0
-        ]
-        return channel_alphas * samples.func_vals / samples.q_sample, alphas
-
-    def _get_probs_alphas(self, samples: SampleBatch):
-        """Run the flow to extract the probability and its logarithm for the given samples x.
-        Compute the corresponding channel weights using y.
-        Args:
-            samples (SampleBatch):
-                Object containing a batch of samples
-        Returns:
-            q_test (torch.Tensor):
-                true probability weighted by alpha / qsample (nsamples,)
-            logq (torch.Tensor):
-                true probability weighted by alpha / qsample (nsamples,)
-            alphas (torch.Tensor):
-                Channel weights with shape (nsamples, nchannels)
-        """
-        one_hot_channels = F.one_hot(samples.channels, self.n_channels)
-        logq = self.dist.log_prob(samples.x, condition=one_hot_channels)
-        q_test = logq.exp()
-
-        nsamples = samples.y.shape[0]
-        if self.train_mcw:
-            if self.use_weight_init:
-                if samples.alphas_prior is None:
-                    init_weights = torch.full(
-                        (nsamples, self.n_channels),
-                        1 / self.n_channels,
-                        device=samples.y.device,
-                    )
-                else:
-                    init_weights = self._restore_prior(samples)
-                alphas = self.mcw_model(
-                    [samples.y, init_weights, self.active_channels_mask]
-                )
-            else:
-                alphas = self.mcw_model(samples.y)
-        else:
-            if samples.alphas_prior is not None:
-                alphas = self._restore_prior(samples)
-            else:
-                alphas = torch.full(
-                    (nsamples, self.n_channels),
-                    1 / self.n_channels,
-                    device=samples.y.device,
-                )
-
-        return q_test, logq, alphas
-
-    def _restore_prior(self, samples: SampleBatch):
-        if samples.alpha_channel_indices is None:
-            return samples.alphas_prior
-
-        n_rest = self.n_channels - self.max_stored_alphas
-        alphas_prior_reduced = samples.alphas_prior
-
-        # strategy 1: distribute difference to 1 evenly among non-stored channels
-        # alphas_prior = torch.clamp(
-        #    (1 - alphas_prior_reduced.sum(dim=1, keepdims=True)) / n_rest,
-        #    min=_EPSILON,
-        # ).repeat(1, self.n_channels)
-        # alphas_prior.scatter_(1, samples.alpha_channel_indices, alphas_prior_reduced)
-        # return alphas_prior
-
-        # strategy 2: set non-stored channel alphas to _EPSILON, normalize again
-        alphas_prior = torch.full(
-            (alphas_prior_reduced.shape[0], self.n_channels),
-            _EPSILON,
-            device=alphas_prior_reduced.device,
-            dtype=alphas_prior_reduced.dtype,
-        )
-        alphas_prior.scatter_(1, samples.alpha_channel_indices, alphas_prior_reduced)
-        return alphas_prior / alphas_prior.sum(dim=1, keepdims=True)
-
-    def _get_funcs_integral(
-        self,
-        alphas: torch.Tensor,
-        q_sample: torch.Tensor,
-        func_vals: torch.Tensor,
-        channels: torch.Tensor,
-    ):
-        """Compute the channel wise means and variances of the integrand and return the
-        channel-wise alpha-weighted integrands.
-        Args:
-            alphas (torch.Tensor):
-                Channel weights with shape (nsamples, nchannels)
-            q_sample (torch.Tensor):
-                Test probability of all mappings (analytic + flow) with shape (nsamples,)
-            func_vals (torch.Tensor):
-                True probability/function with shape (nsamples,)
-            channels (torch.Tensor):
-                Tensor encoding which channel to use with shape (nsamples,)
-        Returns:
-            f_true (torch.Tensor):
-                True channel integrands (incl. alpha) with shape (nsamples,)
-            means (torch.Tensor):
-                Channel-wise means of the integrand with shape (nchannels,)
-            vars (torch.Tensor):
-                Channel-wise variances of the integrand with shape (nchannels,)
-            counts (torch.Tensor):
-                Channel-wise number of samples with shape (nchannels,)
-        """
-        alphas = torch.gather(alphas, index=channels[:, None], dim=1)[:, 0]
-        f_all = alphas * func_vals.abs()  # abs needed for non-positive integrands
-        means = []
-        vars = []
-        counts = []
-        for i in range(self.n_channels):
-            mask = channels == i
-            fi = f_all[mask]
-            qi = q_sample[mask]
-            fi_div_qi = fi / qi
-            meani = (
-                fi_div_qi.mean()
-                if fi.shape[0] > 0
-                else torch.tensor(0.0, device=fi.device, dtype=fi.dtype)
-            )
-            means.append(meani)
-            vars.append(fi_div_qi.var(False))
-            counts.append(fi.shape[0])
-        # check norm again, comment if not needed
-        norm = sum(means).detach()
-        f_true = f_all / norm
-        logf = torch.log(f_true + _EPSILON)  # Maybe kick-out later
-
-        return (
-            f_true,
-            logf,
-            torch.tensor(means),
-            torch.tensor(vars),
-            torch.tensor(counts),
-        )
-
-    def _optimization_step(
-        self,
-        samples: SampleBatch,
-    ):
-        """Perform one optimization step of the networks with the given samples
-        Args:
-            samples (SampleBatch):
-                Object containing a batch of samples
-        Returns:
-            loss (float or tuple[float, float]):
-                Result for the loss (scalar)
-            means (torch.Tensor):
-                Channel-wise means of the integrand with shape (nchannels,)
-            vars (torch.Tensor):
-                Channel-wise variances of the integrand with shape (nchannels,)
-            counts (torch.Tensor):
-                Channel-wise number of samples with shape (nchannels,)
-        """
-        self.optimizer.zero_grad()
-        q_test, logq, alphas = self._get_probs_alphas(samples)
-        f_true, logf, means, vars, counts = self._get_funcs_integral(
-            alphas, samples.q_sample, samples.func_vals, samples.channels
-        )
-        loss = self.loss_func(
-            samples.channels, f_true, q_test, q_sample=samples.q_sample
-        )
-        if loss.isnan().item():
-            print("nan batch: skipping optimization")
-        else:
-            loss.backward()
-            self.optimizer.step()
-        if self.scheduler is not None:
-            self.scheduler.step()
-        ret_loss = loss.item()
-
-        return ret_loss, means, vars, counts
-
-    def _get_variance_weights(self, expect_full_history=True):
-        """Use the list of saved variances to compute weights for sampling the
-        channels to allow for stratified sampling.
-        Returns:
-            w (torch.Tensor):
-                Weights for sampling the channels with shape (nchannels,)
-        """
-        min_len = self.variance_history_length if expect_full_history else 1
-        if len(self.variance_history) < min_len:
-            return torch.ones(self.n_channels)
-
-        count_hist = torch.stack(self.count_history, dim=0).type(
-            torch.get_default_dtype()
-        )
-        var_hist = torch.stack(self.variance_history, dim=0)
-        count_hist[var_hist.isnan()] = np.nan
-        hist_weights = count_hist / count_hist.nansum(dim=0)
-        w = torch.nansum(hist_weights * var_hist, dim=0).sqrt()
-        return w
-
-    def disable_unused_channels(self, irrelevance_threshold: float):
-        count_hist = torch.stack(self.count_history, dim=0).type(
-            torch.get_default_dtype()
-        )
-        mean_hist = torch.stack(self.mean_history, dim=0)
-        mean_hist[mean_hist.isnan()] = 0.0
-        hist_weights = count_hist / count_hist.sum(dim=0)
-        channel_integrals = torch.nansum(hist_weights * mean_hist, dim=0)
-        channel_rel_integrals = channel_integrals / channel_integrals.sum()
-        cri_sort, cri_argsort = torch.sort(channel_rel_integrals)
-        n_irrelevant = torch.count_nonzero(
-            cri_sort.cumsum(dim=0) < irrelevance_threshold
-        )
-        n_disabled = torch.count_nonzero(
-            self.active_channels_mask[cri_argsort[:n_irrelevant]]
-        )
-        self.active_channels_mask[cri_argsort[:n_irrelevant]] = False
-        for samples in self.stored_samples:
-            mask = self.active_channels_mask[samples.channels]
-            samples.x = samples.x[mask]
-            samples.y = samples.y[mask]
-            samples.q_sample = samples.q_sample[mask]
-            samples.func_vals = samples.func_vals[mask]
-            samples.channels = samples.channels[mask]
-            samples.alphas_prior = (
-                None if samples.alphas_prior is None else samples.alphas_prior[mask]
-            )
-            samples.z = None if samples.z is None else samples.z[mask]
-            samples.alpha_channel_indices = (
-                None
-                if samples.alpha_channel_indices is None
-                else samples.alpha_channel_indices[mask]
-            )
-        return n_disabled
-
-    def delete_samples(self):
-        """Delete all stored samples."""
-        del self.stored_samples[:]
-
-    def append_variance(self, vars, counts, means):
-        self.variance_history.append(vars)
-        del self.variance_history[: -self.variance_history_length]
-        self.count_history.append(counts)
-        del self.count_history[: -self.variance_history_length]
-        self.mean_history.append(means)
-        del self.mean_history[: -self.variance_history_length]
-
-    def train_one_step(
-        self,
-        nsamples: int,
-        integral: bool = False,
-    ):
-        # """
-        # Perform one step of integration and improve the sampling.
-
-        # Args:
-        #    nsamples (int):
-        #        Number of samples to be taken in a training step
-        #    integral (bool, optional):
-        #        return the integral value. Defaults to False.
-        # Returns:
-        #    loss:
-        #        Value of the loss function for this step
-        #    integral (optional):
-        #        Estimate of the integral value
-        #    uncertainty (optional):
-        #        Integral statistical uncertainty
-        # """
-
-        # Sample from flow and update
-        channels = self._get_channels(
-            nsamples,
-            self._get_variance_weights(),
-            self.uniform_channel_ratio,
-        )
-        samples, _ = self._get_samples(channels)
-        loss, means, vars, counts = self._optimization_step(samples)
-        self._store_samples(samples)
-
-        self.append_variance(vars, counts, means)
-
-        if integral:
-            return (
-                loss,
-                means.sum(),
-                torch.sqrt(torch.sum(vars / (counts - 1.0))),
-            )
-
-        return loss
-
-    def train_on_stored_samples(self, batch_size: int):
-        """Train the network on all saved samples.
-        Args:
-            batch_size (int):
-                Size of the batches that the saved samples are split up into
-        Returns:
-            loss:
-                Averaged value of the loss function
-        """
-        sample_count = sum(int(item.x.shape[0]) for item in self.stored_samples)
-        perm = torch.randperm(sample_count)
-
-        keys = [k for k, v in asdict(self.stored_samples[0]).items() if v is not None]
-        dataset = torch.utils.data.TensorDataset(
-            *(
-                torch.cat(item, dim=0)[perm]
-                for item in zip(*self.stored_samples)
-                if item[0] is not None
-            )
-        )
-        data_loader = torch.utils.data.DataLoader(
-            dataset, batch_size=batch_size, drop_last=True
-        )
-
-        losses = []
-        for fields in data_loader:
-            loss, _, _, _ = self._optimization_step(
-                SampleBatch(**dict(zip(keys, fields)))
-            )
-            losses.append(loss)
-        return np.nanmean(losses, axis=0)
-
-    ###############################################################################################
-    # OLD SHIT ENDS HERE                                                                          #
-    ###############################################################################################
+        self.buffer.store(*samples)
 
     def _get_channels(
         self,
@@ -658,7 +513,39 @@ class Integrator(nn.Module):
         Returns:
             Training status
         """
-        status = TrainingStatus()
+
+        channels = self._get_channels(
+            self.batch_size, self._get_variance_weights(), self.uniform_channel_ratio
+        )
+        samples, _ = self._get_samples(channels)
+        online_loss, means, variances, counts = self._optimization_step(samples)
+        self._store_samples(samples)
+        self.variance_history.store(variances, counts, means)
+
+        if self.buffered_steps != 0 and self.buffer.size > self.minimum_buffer_size:
+            all_samples = SampleBatch(
+                *self.buffer.sample(self.buffered_steps * self.batch_size)
+            )
+            buffered_loss = 0.0
+            count = 0
+            for samples in all_samples.split(self.batch_size):
+                loss, _, _, _ = self._optimization_step(samples)
+                buffered_loss += loss
+                count += 1
+            buffered_loss /= count
+        else:
+            buffered_loss = None
+
+        dropped_channels = self._disable_unused_channels()
+        status = TrainingStatus(
+            step=self.step,
+            online_loss=online_loss,
+            buffered_loss=buffered_loss,
+            learning_rate=(
+                None if self.scheduler is None else self.scheduler.get_last_lr()[0]
+            ),
+            dropped_channels=dropped_channels,
+        )
 
         if self.scheduler is not None:
             self.scheduler.step()
