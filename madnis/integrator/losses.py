@@ -5,7 +5,55 @@ from typing import Callable
 
 import torch
 
+# Temporary definitions of losses
 
+
+def stratified_variance(
+    f_true: torch.Tensor,
+    q_test: torch.Tensor,
+    q_sample: torch.Tensor = None,
+    channels: torch.Tensor = None,
+):
+    if q_sample is None:
+        q_sample = q_test
+    if channels is None:
+        return _variance(f_true, q_test, q_sample)
+
+    stddev_sum = 0
+    # ignores channel grouping for now
+    # also its ugly because it needs to compute the number of channels...
+    # so maybe it's better to still use a class for the loss in the multi-channel case?
+    for i in range(torch.max(channels) + 1):
+        mask = channels == i
+        fi, qti, qsi = f_true[mask], q_test[mask], q_sample[mask]
+        epsilon = torch.finfo(f_true.dtype).eps
+        stddev_sum += torch.sqrt(_variance(fi, qti, qsi, fi_detached_x) + epsilon)
+
+    return stddev_sum**2
+
+
+def _variance(
+    f_true: torch.Tensor,
+    q_test: torch.Tensor,
+    q_sample: torch.Tensor,
+):
+    ratio = q_test / q_sample
+    mean = torch.mean(f_true / q_sample)
+    sq = (f_true / q_test - mean) ** 2
+    return (
+        torch.mean(sq * ratio)
+        if len(f_true) > 0
+        else torch.tensor(0.0, device=f_true.device, dtype=f_true.dtype)
+    )
+
+
+def kl_divergence(f_true, q_test, q_sample, channels):
+    logq = torch.log(q_test)
+    logf = torch.log(f_true + 1e-15)
+    return torch.mean(f_true / q_sample * (logf - logq))
+
+
+'''
 def wrapped_loss(func: Callable) -> Callable:
     """Implement multi-channel decorator.
 
@@ -457,3 +505,4 @@ class MultiChannelLoss:
             f"The requested loss function {name} is not implemented. "
             + f"Allowed options are {self.divergences}."
         )
+'''

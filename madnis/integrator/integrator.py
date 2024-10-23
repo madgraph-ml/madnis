@@ -13,6 +13,7 @@ import torch.nn.functional as F
 from ..nn import MLP, Flow
 from .buffer import Buffer
 from .integrand import Integrand
+from .losses import kl_divergence
 
 
 @dataclass
@@ -128,7 +129,7 @@ class Integrator(nn.Module):
         train_channel_weights: bool = False,
         cwnet: nn.Module | None = None,
         cwnet_kwargs: dict[str, Any] = {},
-        loss: Callable = None,  # TODO
+        loss: Callable = kl_divergence,
         optimizer: torch.optim.Optimizer | None = None,
         batch_size: int = 1024,
         learning_rate: float = 1e-3,
@@ -239,7 +240,6 @@ class Integrator(nn.Module):
                 None if not integrand.channel_weight_prior else (channel_count,),
                 None if self.max_stored_channel_weights is None else (channel_count,),
             ]
-            print(buffer_fields)
             self.buffer = Buffer(buffer_capacity, buffer_fields, persistent=False)
         else:
             self.buffer = None

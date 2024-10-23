@@ -6,5 +6,13 @@ evaluate the integration and sampling performance.
 from .buffer import Buffer
 from .integrand import Integrand
 from .integrator import Integrator, TrainingStatus
+from .losses import kl_divergence, stratified_variance
 
-__all__ = ["Integrator", "TrainingStatus", "Integrand", "Buffer"]
+__all__ = [
+    "Integrator",
+    "TrainingStatus",
+    "Integrand",
+    "Buffer",
+    "stratified_variance",
+    "kl_divergence",
+]
