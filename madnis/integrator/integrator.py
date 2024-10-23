@@ -88,8 +88,10 @@ class SampleBatch:
             Iterator over the batches
         """
         for batch in zip(
-            itertools.repeat(None) if field is None else field.split(batch_size)
-            for field in self
+            *(
+                itertools.repeat(None) if field is None else field.split(batch_size)
+                for field in self
+            )
         ):
             yield SampleBatch(*batch)
 
@@ -196,10 +198,10 @@ class Integrator(nn.Module):
             integrand = Integrand(integrand, dims)
         if flow is None:
             flow = Flow(
-                dims_in=integrand.y_dim, channels=integrand.channels, **flow_kwargs
+                dims_in=integrand.input_dim, channels=integrand.channels, **flow_kwargs
             )
         if cwnet is None and train_channel_weights:
-            cwnet = MLP(integrand.x_dim, integrand.channels, **cwnet_kwargs)
+            cwnet = MLP(integrand.remapped_dim, integrand.channels, **cwnet_kwargs)
         parameters = [*flow.parameters()]
         if cwnet is not None:
             parameters.extend(cwnet.parameters())
@@ -211,13 +213,13 @@ class Integrator(nn.Module):
         self.flow = flow
         self.cwnet = cwnet
         self.optimizer = optimizer
+        self.batch_size = batch_size
         self.loss = loss
         self.scheduler = scheduler
         self.uniform_channel_ratio = uniform_channel_ratio
         self.drop_zero_integrands = drop_zero_integrands
         self.batch_size_threshold = batch_size_threshold
-        if buffer_capacity > 0:
-            self.buffer = Buffer(buffer_capacity, ..., persistent=False)
+
         self.minimum_buffer_size = minimum_buffer_size
         self.buffered_steps = buffered_steps
         self.max_stored_channel_weights = (
@@ -226,6 +228,21 @@ class Integrator(nn.Module):
             or max_stored_channel_weights >= integrand.channels
             else max_stored_channel_weights
         )
+        if buffer_capacity > 0:
+            channel_count = self.max_stored_channel_weights or integrand.channels
+            buffer_fields = [
+                (integrand.input_dim,),
+                None if integrand.remapped_dim is None else (integrand.remapped_dim,),
+                (),
+                (),
+                None if integrand.channels is None else (),
+                None if not integrand.channel_weight_prior else (channel_count,),
+                None if self.max_stored_channel_weights is None else (channel_count,),
+            ]
+            print(buffer_fields)
+            self.buffer = Buffer(buffer_capacity, buffer_fields, persistent=False)
+        else:
+            self.buffer = None
         self.channel_dropping_threshold = channel_dropping_threshold
         self.channel_dropping_interval = channel_dropping_interval
         if self.multichannel:
@@ -318,8 +335,8 @@ class Integrator(nn.Module):
             counts = None
             variances = None
 
-        loss = self.loss_func(
-            samples.channels, f_true, q_test, q_sample=samples.q_sample
+        loss = self.loss(
+            f_true, q_test, q_sample=samples.q_sample, channels=samples.channels
         )
         if loss.isnan().item():
             warnings.warn("nan batch: skipping optimization")
@@ -550,13 +567,19 @@ class Integrator(nn.Module):
             Training status
         """
 
-        channels = self._get_channels(
-            self.batch_size, self._get_variance_weights(), self.uniform_channel_ratio
-        )
-        samples, _ = self._get_samples(channels)
+        if self.multichannel:
+            channels = self._get_channels(
+                self.batch_size,
+                self._get_variance_weights(),
+                self.uniform_channel_ratio,
+            )
+            samples = self._get_samples(len(channels), channels)
+        else:
+            samples = self._get_samples(self.batch_size)
         online_loss, means, variances, counts = self._optimization_step(samples)
         self._store_samples(samples)
-        self.variance_history.store(variances, counts, means)
+        if self.multichannel:
+            self.variance_history.store(variances, counts, means)
 
         if self.buffered_steps != 0 and self.buffer.size > self.minimum_buffer_size:
             all_samples = SampleBatch(

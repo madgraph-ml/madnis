@@ -419,7 +419,7 @@ class Flow(nn.Module):
         x, jac = self.transform(z, c, True, channel)
         if return_log_prob or return_prob:
             log_prob_latent = self._latent_log_prob(z)
-            log_prob = log_prob_latent + jac
+            log_prob = log_prob_latent - jac
 
         extra_returns = []
         if return_log_prob:

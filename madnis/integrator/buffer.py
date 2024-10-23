@@ -152,4 +152,7 @@ class Buffer(nn.Module):
             self.size
         )
         indices = torch.multinomial(weights, min(count, self.size), replacement=False)
-        return [buffer[indices] for buffer in self._buffer_fields()]
+        return [
+            None if buffer is None else buffer[indices]
+            for buffer in self._buffer_fields()
+        ]

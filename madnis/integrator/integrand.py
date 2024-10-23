@@ -55,7 +55,9 @@ class Integrand:
         self.remapped_dim = remapped_dim
         self.channels = channels
         self.channel_weight_prior = channel_weight_prior
-        self.channel_grouping = ChannelGrouping(channel_grouping)
+        self.channel_grouping = (
+            None if channel_grouping is None else ChannelGrouping(channel_grouping)
+        )
 
         if channels is None:
             self.function = lambda x, channels: (function(x), None, None)
