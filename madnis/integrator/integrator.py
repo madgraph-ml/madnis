@@ -135,7 +135,7 @@ class Integrator(nn.Module):
         learning_rate: float = 1e-3,
         scheduler: torch.optim.lr_scheduler.LRScheduler | None = None,
         uniform_channel_ratio: float = 1.0,
-        variance_history_length: int = 20,
+        integration_history_length: int = 20,
         drop_zero_integrands: bool = False,
         batch_size_threshold: float = 0.5,
         buffer_capacity: int = 0,
@@ -172,7 +172,7 @@ class Integrator(nn.Module):
                 is used.
             uniform_channel_ratio: part of samples in each batch that will be distributed equally
                 between all channels, value has to be between 0 and 1.
-            variance_history_length: number of batches for which the channel-wise means and
+            integration_history_length: number of batches for which the channel-wise means and
                 variances are stored. This is used for stratified sampling during integration, and
                 during the training if uniform_channel_ratio is different from one.
             drop_zero_integrands: If True, points with integrand zero are dropped and not used for
@@ -245,13 +245,10 @@ class Integrator(nn.Module):
             self.buffer = None
         self.channel_dropping_threshold = channel_dropping_threshold
         self.channel_dropping_interval = channel_dropping_interval
-        if self.multichannel:
-            hist_shape = (self.integrand.channels,)
-            self.variance_history = Buffer(
-                variance_history_length, [hist_shape, hist_shape, hist_shape]
-            )
-        else:
-            self.variance_history = None
+        hist_shape = (self.integrand.channels or 1,)
+        self.integration_history = Buffer(
+            integration_history_length, [hist_shape, hist_shape, hist_shape]
+        )
         self.step = 0
 
         if device is not None:
@@ -282,35 +279,28 @@ class Integrator(nn.Module):
         )
         return alpha
 
-    def _optimization_step(
-        self,
-        samples: SampleBatch,
-    ) -> tuple[float, torch.Tensor | None, torch.Tensor | None, torch.Tensor | None]:
+    def _compute_integral(
+        self, samples: SampleBatch
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """
-        Perform one optimization step of the networks for the given samples
+        Computes normalized integrand and channel-wise means, variances and counts
 
         Args:
             samples: batch of samples
         Returns:
             A tuple containing
 
-              - value of the loss
+              - normalized integrand, shape (n, )
               - channel-wise means of the integral, shape (channels, )
               - channel-wise variances of the integral, shape (channels, )
               - channel-wise number of samples, shape (channels, )
-
-            The latter three values are None in the single-channel case
         """
-        self.optimizer.zero_grad()
-        q_test = self.flow.prob(samples.x, channel=samples.channels)
-
         if self.multichannel:
             alphas = torch.gather(
                 self._get_alphas(samples), index=samples.channels[:, None], dim=1
             )[:, 0]
-            f_all = (
-                alphas * samples.func_vals.abs()
-            )  # abs needed for non-positive integrands
+            # abs needed for non-positive integrands
+            f_all = alphas * samples.func_vals.abs()
             f_div_q = f_all.detach() / samples.q_sample.detach()
             counts = torch.bin_count(
                 samples.channels, minlength=self.integrand.channels
@@ -331,10 +321,31 @@ class Integrator(nn.Module):
             f_all = samples.func_vals.abs()
             f_div_q = f_all.detach() / samples.q_sample.detach()
             f_true = f_all / f_div_q.mean()
-            means = None
-            counts = None
-            variances = None
+            means = f_div_q.mean(dim=0, keepdim=True)
+            counts = torch.full_like(means, f_div_q.shape[0])
+            variances = f_div_q.var(dim=0, keepdim=True)
+        return f_true, means, variances, counts
 
+    def _optimization_step(
+        self,
+        samples: SampleBatch,
+    ) -> tuple[float, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        Perform one optimization step of the networks for the given samples
+
+        Args:
+            samples: batch of samples
+        Returns:
+            A tuple containing
+
+              - value of the loss
+              - channel-wise means of the integral, shape (channels, )
+              - channel-wise variances of the integral, shape (channels, )
+              - channel-wise number of samples, shape (channels, )
+        """
+        self.optimizer.zero_grad()
+        q_test = self.flow.prob(samples.x, channel=samples.channels)
+        f_true, means, variances, counts = self._compute_integral(samples)
         loss = self.loss(
             f_true, q_test, q_sample=samples.q_sample, channels=samples.channels
         )
@@ -343,7 +354,6 @@ class Integrator(nn.Module):
         else:
             loss.backward()
             self.optimizer.step()
-
         return loss.item(), means, variances, counts
 
     def _restore_prior(self, samples: SampleBatch) -> torch.Tensor:
@@ -389,10 +399,10 @@ class Integrator(nn.Module):
         Returns:
             Weights for sampling the channels with shape (channels,)
         """
-        min_len = self.variance_history.capacity if expect_full_history else 1
-        if self.variance_history.size < min_len:
+        min_len = self.integration_history.capacity if expect_full_history else 1
+        if self.integration_history.size < min_len:
             return torch.ones(self.n_channels)
-        var_hist, _, count_hist = self.variance_history
+        _, var_hist, count_hist = self.integration_history
         count_hist = torch.where(var_hist.isnan(), np.nan, count_hist)
         hist_weights = count_hist / count_hist.nansum(dim=0)
         return torch.nansum(hist_weights * var_hist, dim=0).sqrt()
@@ -410,7 +420,7 @@ class Integrator(nn.Module):
         if (self.steps + 1) % self.channel_dropping_interval != 0:
             return 0
 
-        _, mean_hist, count_hist = self.variance_history
+        mean_hist, _, count_hist = self.integration_history
         mean_hist = torch.nan_to_num(mean_hist)
         hist_weights = count_hist / count_hist.sum(dim=0)
         channel_integrals = torch.nansum(hist_weights * mean_hist, dim=0)
@@ -521,24 +531,31 @@ class Integrator(nn.Module):
         )
 
     def _get_samples(
-        self, n: int, channels: torch.Tensor | None = None, train: bool = False
+        self, n: int, uniform_channel_ratio: float = 0.0, train: bool = False
     ) -> SampleBatch:
         """
-        Draws samples from the flow for the given channels and evaluates the integrand
+        Draws samples from the flow and evaluates the integrand
 
         Args:
             n: number of samples
-            channels: Tensor encoding which channel to use with shape (n,) or None for a
-                single-channel integrand
+            uniform_channel_ratio: Number between 0.0 and 1.0 to determine the ratio of samples
+                that will be distributed uniformly first
             train: If True, the function is used in training mode, i.e. samples where the integrand
                 is zero will be removed if drop_zero_integrands is True
         Returns:
             Object containing a batch of samples
         """
+        channels = (
+            self._get_channels(
+                self.batch_size, self._get_variance_weights(), uniform_channel_ratio
+            )
+            if self.multichannel
+            else None
+        )
+
         batches_out = []
         x_mask_cache = []
         current_batch_size = 0
-
         while True:
             with torch.no_grad():
                 x, prob = self.flow.sample(n, return_prob=True)
@@ -567,19 +584,12 @@ class Integrator(nn.Module):
             Training status
         """
 
-        if self.multichannel:
-            channels = self._get_channels(
-                self.batch_size,
-                self._get_variance_weights(),
-                self.uniform_channel_ratio,
-            )
-            samples = self._get_samples(len(channels), channels)
-        else:
-            samples = self._get_samples(self.batch_size)
+        samples = self._get_samples(
+            self.batch_size, self.uniform_channel_ratio, train=True
+        )
         online_loss, means, variances, counts = self._optimization_step(samples)
         self._store_samples(samples)
-        if self.multichannel:
-            self.variance_history.store(variances, counts, means)
+        self.integration_history.store(means[None], variances[None], counts[None])
 
         if self.buffered_steps != 0 and self.buffer.size > self.minimum_buffer_size:
             all_samples = SampleBatch(
@@ -647,3 +657,36 @@ class Integrator(nn.Module):
         finally:
             if capture_keyboard_interrupt:
                 signal.signal(signal.SIGINT, old_handler)
+
+    def integrate(self, n: int) -> tuple[float, float]:
+        """
+        Draws new samples and computes the integral.
+
+        Args:
+            n: number of samples
+        Returns:
+            tuple with the value of the integral and the MC integration error
+        """
+        samples = self._get_samples(n)
+        _, means, variances, counts = self._compute_integral(samples)
+        self.integration_history.store(means[None], variances[None], counts[None])
+        integral = means.sum().item()
+        error = torch.sum(variances / counts).sqrt().item()
+        return integral, error
+
+    def integral(self) -> tuple[float, float]:
+        """
+        Returns the current estimate of the integral based on previous training iterations and calls
+        to the ``integrate`` function.
+
+        Returns:
+            tuple with the value of the integral and the MC integration error
+        """
+        mean_hist, var_hist, count_hist = self.integration_history
+        integrals = mean_hist.sum(dim=1)
+        variances = torch.sum(var_hist / count_hist, dim=1)
+        weights = 1 / variances
+        weight_sum = weights.sum()
+        integral = torch.sum(weights / weight_sum * integrals).item()
+        error = torch.sqrt(1 / weight_sum).item()
+        return integral, error
