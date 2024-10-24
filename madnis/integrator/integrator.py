@@ -9,6 +9,8 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.optim import Optimizer
+from torch.optim.lr_scheduler import LRScheduler
 
 from ..nn import MLP, Flow
 from .buffer import Buffer
@@ -130,10 +132,12 @@ class Integrator(nn.Module):
         cwnet: nn.Module | None = None,
         cwnet_kwargs: dict[str, Any] = {},
         loss: Callable = kl_divergence,
-        optimizer: torch.optim.Optimizer | None = None,
+        optimizer: (
+            Optimizer | Callable[[Iterable[nn.Parameter]], Optimizer] | None
+        ) = None,
         batch_size: int = 1024,
         learning_rate: float = 1e-3,
-        scheduler: torch.optim.lr_scheduler.LRScheduler | None = None,
+        scheduler: LRScheduler | Callable[[Optimizer], LRScheduler] | None = None,
         uniform_channel_ratio: float = 1.0,
         integration_history_length: int = 20,
         drop_zero_integrands: bool = False,
@@ -165,11 +169,14 @@ class Integrator(nn.Module):
             cwnet_kwargs: If cwnet is None and train_channel_weights is True, these keyword
                 arguments are passed to the `MLP` constructor.
             loss: Loss function used for training.
-            optimizer: optimizer for the training. If None, the Adam optimizer is used.
+            optimizer: optimizer for the training. Can be an optimizer object or function that is
+                called with the model parameters as argument and returns the optimizer. If None, the
+                Adam optimizer is used.
             batch_size: Training batch size
             learning_rate: learning rate used for the Adam optimizer
-            scheduler: learning rate scheduler for the training. If None, a constant learning rate
-                is used.
+            scheduler: learning rate scheduler for the training. Can be a learning rate scheduler
+                object or a function that gets the optimizer as argument and returns the scheduler.
+                If None, a constant learning rate is used.
             uniform_channel_ratio: part of samples in each batch that will be distributed equally
                 between all channels, value has to be between 0 and 1.
             integration_history_length: number of batches for which the channel-wise means and
@@ -199,24 +206,33 @@ class Integrator(nn.Module):
             integrand = Integrand(integrand, dims)
         if flow is None:
             flow = Flow(
-                dims_in=integrand.input_dim, channels=integrand.channels, **flow_kwargs
+                dims_in=integrand.input_dim,
+                channels=integrand.channel_count,
+                **flow_kwargs,
             )
         if cwnet is None and train_channel_weights:
-            cwnet = MLP(integrand.remapped_dim, integrand.channels, **cwnet_kwargs)
-        parameters = [*flow.parameters()]
-        if cwnet is not None:
-            parameters.extend(cwnet.parameters())
+            cwnet = MLP(integrand.remapped_dim, integrand.channel_count, **cwnet_kwargs)
+        if cwnet is None:
+            parameters = flow.parameters()
+        else:
+            parameters = itertools.chain(flow.parameters(), cwnet.parameters())
         if optimizer is None:
-            optimizer = torch.optim.Adam(parameters, learning_rate)
+            self.optimizer = torch.optim.Adam(parameters, learning_rate)
+        elif isinstance(optimizer, Optimizer):
+            self.optimizer = optimizer
+        else:
+            self.optimizer = optimizer(parameters)
+        if scheduler is None or isinstance(scheduler, LRScheduler):
+            self.scheduler = scheduler
+        else:
+            self.scheduler = scheduler(optimizer)
 
         self.integrand = integrand
-        self.multichannel = integrand.channels is not None
+        self.multichannel = integrand.channel_count is not None
         self.flow = flow
         self.cwnet = cwnet
-        self.optimizer = optimizer
         self.batch_size = batch_size
         self.loss = loss
-        self.scheduler = scheduler
         self.uniform_channel_ratio = uniform_channel_ratio
         self.drop_zero_integrands = drop_zero_integrands
         self.batch_size_threshold = batch_size_threshold
@@ -226,30 +242,40 @@ class Integrator(nn.Module):
         self.max_stored_channel_weights = (
             None
             if max_stored_channel_weights is None
-            or max_stored_channel_weights >= integrand.channels
+            or max_stored_channel_weights >= integrand.channel_count
             else max_stored_channel_weights
         )
         if buffer_capacity > 0:
-            channel_count = self.max_stored_channel_weights or integrand.channels
+            channel_count = self.max_stored_channel_weights or integrand.channel_count
             buffer_fields = [
                 (integrand.input_dim,),
                 None if integrand.remapped_dim is None else (integrand.remapped_dim,),
                 (),
                 (),
-                None if integrand.channels is None else (),
-                None if not integrand.channel_weight_prior else (channel_count,),
+                None if integrand.channel_count is None else (),
+                None if not integrand.has_channel_weight_prior else (channel_count,),
                 None if self.max_stored_channel_weights is None else (channel_count,),
             ]
-            self.buffer = Buffer(buffer_capacity, buffer_fields, persistent=False)
+            buffer_dtypes = [None, None, None, None, torch.int64, None, torch.int64]
+            self.buffer = Buffer(
+                buffer_capacity, buffer_fields, persistent=False, dtypes=buffer_dtypes
+            )
         else:
             self.buffer = None
         self.channel_dropping_threshold = channel_dropping_threshold
         self.channel_dropping_interval = channel_dropping_interval
-        hist_shape = (self.integrand.channels or 1,)
+        hist_shape = (self.integrand.channel_count or 1,)
         self.integration_history = Buffer(
             integration_history_length, [hist_shape, hist_shape, hist_shape]
         )
         self.step = 0
+        if self.multichannel:
+            self.register_buffer(
+                "active_channels_mask",
+                torch.ones((self.integrand.channel_count,), dtype=torch.bool),
+            )
+        # Dummy to determine device and dtype
+        self.register_buffer("dummy", torch.zeros((1,)))
 
         if device is not None:
             self.to(device)
@@ -268,14 +294,14 @@ class Integrator(nn.Module):
         """
         if samples.alphas_prior is None:
             log_alpha_prior = samples.x.new_zeros(
-                (samples.x.shape[0], self.integrand.channels)
+                (samples.x.shape[0], self.integrand.channel_count)
             )
         else:
             log_alpha_prior = self._restore_prior(samples).log()
         log_alpha = log_alpha_prior + self.cwnet(samples.y)
         alpha = torch.zeros_like(log_alpha)
-        alpha[:, self.active_channel_mask] = F.softmax(
-            log_alpha[:, self.active_channel_mask], dim=1, keepdim=True
+        alpha[:, self.active_channels_mask] = F.softmax(
+            log_alpha[:, self.active_channels_mask], dim=1
         )
         return alpha
 
@@ -302,17 +328,19 @@ class Integrator(nn.Module):
             # abs needed for non-positive integrands
             f_all = alphas * samples.func_vals.abs()
             f_div_q = f_all.detach() / samples.q_sample.detach()
-            counts = torch.bin_count(
-                samples.channels, minlength=self.integrand.channels
+            counts = torch.bincount(
+                samples.channels, minlength=self.integrand.channel_count
             )
-            means = torch.bin_count(
-                samples.channels, weights=f_div_q, minlength=self.integrand.channels
-            ) / torch.maximum(counts, 1)
+            means = torch.bincount(
+                samples.channels,
+                weights=f_div_q,
+                minlength=self.integrand.channel_count,
+            ) / counts.clip(min=1)
             variances = (
-                torch.bin_count(
+                torch.bincount(
                     samples.channels,
-                    weight=(f_div_q - means[samples.channels]).square(),
-                    minlength=self.integrand.channels,
+                    weights=(f_div_q - means[samples.channels]).square(),
+                    minlength=self.integrand.channel_count,
                 )
                 / counts
             )
@@ -369,7 +397,7 @@ class Integrator(nn.Module):
         if samples.alpha_channel_indices is None:
             return samples.alphas_prior
 
-        n_rest = self.integrand.channels - self.max_stored_channel_weights
+        n_rest = self.integrand.channel_count - self.max_stored_channel_weights
         alphas_prior_reduced = samples.alphas_prior
         epsilon = torch.finfo(alphas_prior_reduced.dtype).eps
 
@@ -377,13 +405,13 @@ class Integrator(nn.Module):
         # alphas_prior = torch.clamp(
         #    (1 - alphas_prior_reduced.sum(dim=1, keepdims=True)) / n_rest,
         #    min=epsilon,
-        # ).repeat(1, self.integrand.channels)
+        # ).repeat(1, self.integrand.channel_count)
         # alphas_prior.scatter_(1, samples.alpha_channel_indices, alphas_prior_reduced)
         # return alphas_prior
 
         # strategy 2: set non-stored channel alphas to epsilon, normalize again
         alphas_prior = alphas_prior_reduced.new_full(
-            (alphas_prior_reduced.shape[0], self.integrand.channels), epsilon
+            (alphas_prior_reduced.shape[0], self.integrand.channel_count), epsilon
         )
         alphas_prior.scatter_(1, samples.alpha_channel_indices, alphas_prior_reduced)
         return alphas_prior / alphas_prior.sum(dim=1, keepdims=True)
@@ -401,7 +429,11 @@ class Integrator(nn.Module):
         """
         min_len = self.integration_history.capacity if expect_full_history else 1
         if self.integration_history.size < min_len:
-            return torch.ones(self.n_channels)
+            return torch.ones(
+                self.integrand.channel_count,
+                device=self.dummy.device,
+                dtype=self.dummy.dtype,
+            )
         _, var_hist, count_hist = self.integration_history
         count_hist = torch.where(var_hist.isnan(), np.nan, count_hist)
         hist_weights = count_hist / count_hist.nansum(dim=0)
@@ -452,7 +484,7 @@ class Integrator(nn.Module):
 
         if (
             self.max_stored_channel_weights is not None
-            and self.integrand.channel_weight_prior
+            and self.integrand.has_channel_weight_prior
         ):
             # Hack to ensure that the alpha for the channel that the sample was generated with
             # is always stored
@@ -498,13 +530,15 @@ class Integrator(nn.Module):
         Returns:
             Tensor of channel numbers with shape (n,)
         """
-        assert channel_weights.shape == (self.integrand.channels,)
+        assert channel_weights.shape == (self.integrand.channel_count,)
         n_active_channels = torch.count_nonzero(self.active_channels_mask)
         uniform_per_channel = int(
             np.ceil(n * uniform_channel_ratio / n_active_channels)
         )
-        n_per_channel = channel_weights.new_full(
-            (self.n_channels,), uniform_per_channel
+        n_per_channel = torch.full(
+            (self.integrand.channel_count,),
+            uniform_per_channel,
+            device=self.dummy.device,
         )
         n_per_channel[~self.active_channels_mask] = 0
 
@@ -523,11 +557,14 @@ class Integrator(nn.Module):
         while n_per_channel.sum() > n:
             if n_per_channel[remove_chan] > 0:
                 n_per_channel[remove_chan] -= 1
-            remove_chan = (remove_chan + 1) % self.n_channels
+            remove_chan = (remove_chan + 1) % self.integrand.channel_count
         assert n_per_channel.sum() == n
 
         return torch.cat(
-            [channel_weights.new_full((npc,), i) for i, npc in enumerate(n_per_channel)]
+            [
+                torch.full((npc,), i, device=self.dummy.device)
+                for i, npc in enumerate(n_per_channel)
+            ]
         )
 
     def _get_samples(
@@ -558,7 +595,13 @@ class Integrator(nn.Module):
         current_batch_size = 0
         while True:
             with torch.no_grad():
-                x, prob = self.flow.sample(n, return_prob=True)
+                x, prob = self.flow.sample(
+                    n,
+                    channel=channels,
+                    return_prob=True,
+                    device=self.dummy.device,
+                    dtype=self.dummy.dtype,
+                )
 
             weight, y, alphas_prior = self.integrand(x, channels)
             batch = SampleBatch(x, y, prob, weight, channels, alphas_prior)

@@ -11,7 +11,11 @@ class Buffer(nn.Module):
     """
 
     def __init__(
-        self, capacity: int, shapes: list[tuple[int, ...]], persistent: bool = True
+        self,
+        capacity: int,
+        shapes: list[tuple[int, ...]],
+        persistent: bool = True,
+        dtypes: list[torch.dtype | None] | None = None,
     ):
         """
         Args:
@@ -20,14 +24,17 @@ class Buffer(nn.Module):
                 None, no tensor is stored at that position. This allows for simpler handling of
                 optional stored fields.
             persistent: if True, the content of the buffer is part of the module's state_dict
+            dtypes: if different from None, specifies the tensors which have a non-standard dtype
         """
         super().__init__()
         self.keys = []
-        for i, shape in enumerate(shapes):
+        if dtypes is None:
+            dtypes = [None] * len(shapes)
+        for i, (shape, dtype) in enumerate(zip(shapes, dtypes)):
             key = f"buffer{i}"
             self.register_buffer(
                 key,
-                None if shape is None else torch.zeros(capacity, *shape),
+                None if shape is None else torch.zeros((capacity, *shape), dtype=dtype),
                 persistent,
             )
             self.keys.append(key)

@@ -15,24 +15,24 @@ class Integrand:
         self,
         function: Callable,
         input_dim: int,
-        channels: int | None = None,
+        channel_count: int | None = None,
         remapped_dim: int | None = None,
-        channel_weight_prior: bool = False,
-        channel_grouping: list[int | None] | None = None,
+        has_channel_weight_prior: bool = False,
+        channel_grouping: ChannelGrouping | None = None,
     ):
         """
         Args:
             function: integrand function.
                 The signature depends on the other arguments:
 
-                  - single-channel integration, ``channels=None``: ``x -> f``
+                  - single-channel integration, ``channel_count=None``: ``x -> f``
                   - basic multi-channel integration, ``remapped_dim=None``,
-                    ``channel_weight_prior=False``: ``(x, c) -> f``
-                  - with channel weights, ``remapped_dim=None``, ``channel_weight_prior=True``:
+                    ``has_channel_weight_prior=False``: ``(x, c) -> f``
+                  - with channel weights, ``remapped_dim=None``, ``has_channel_weight_prior=True``:
                     ``(x, c) -> (f, alpha)`` (no trainable channel weights possible)
                   - with channel-dependent mapping, ``remapped_dim: int``,
-                    ``channel_weight_prior=False``: ``(x, c) -> (f, y)``
-                  - all features, ``remapped_dim: int``, ``channel_weight_prior=True``:
+                    ``has_channel_weight_prior=False``: ``(x, c) -> (f, y)``
+                  - all features, ``remapped_dim: int``, ``has_channel_weight_prior=True``:
                     ``(x, c) -> (f, y, alpha)``
 
                 with the following tensors:
@@ -42,27 +42,25 @@ class Integrand:
                   - ``f`` is the integrand value, shape (n, ),
                   - ``y`` is the point after applying a channel-dependent mapping, shape
                     (n, remapped_dim)
-                  - ``alpha`` is the prior channel weight, shape (n, channels).
+                  - ``alpha`` is the prior channel weight, shape (n, channel_count).
             input_dim: dimension of the integration space.
-            channels: None in the single-channel case, specifies the number of channels otherwise.
+            channel_count: None in the single-channel case, specifies the number of channels
+                otherwise.
             remapped_dim: If different from None, it gives the dimension of a remapped space,
                 with a channel-dependent mapping computed as part of the integrand function.
-            channel_weight_prior: If True, the integrand returns channel weights
-            channel_grouping: If different from None, this argument is passed to the constructor
-                of the class ChannelGrouping. See its documentation for details.
+            has_channel_weight_prior: If True, the integrand returns channel weights
+            channel_grouping: ChannelGrouping object or None if all channels are independent
         """
         self.input_dim = input_dim
         self.remapped_dim = remapped_dim
-        self.channels = channels
-        self.channel_weight_prior = channel_weight_prior
-        self.channel_grouping = (
-            None if channel_grouping is None else ChannelGrouping(channel_grouping)
-        )
+        self.channel_count = channel_count
+        self.has_channel_weight_prior = has_channel_weight_prior
+        self.channel_grouping = channel_grouping
 
-        if channels is None:
+        if channel_count is None:
             self.function = lambda x, channels: (function(x), None, None)
         elif remapped_dim is None:
-            if channel_weight_prior:
+            if has_channel_weight_prior:
                 self.function = lambda x, channels: (function(x, channels), None, None)
             else:
 
@@ -71,7 +69,7 @@ class Integrand:
                     return x, None, prior
 
                 self.function = func
-        elif channel_weight_prior:
+        elif has_channel_weight_prior:
             self.function = function
         else:
 

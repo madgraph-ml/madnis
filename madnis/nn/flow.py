@@ -228,7 +228,7 @@ class Flow(nn.Module):
         if isinstance(channel, torch.Tensor):
             channel_perm = torch.argsort(channel)
             x = x[channel_perm]
-            c = c[channel_perm]
+            c = None if c is None else c[channel_perm]
             channel = channel.bincount(minlength=self.channels).tolist()
         else:
             x = x.clone()

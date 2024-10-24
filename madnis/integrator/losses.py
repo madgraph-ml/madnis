@@ -27,7 +27,7 @@ def stratified_variance(
         mask = channels == i
         fi, qti, qsi = f_true[mask], q_test[mask], q_sample[mask]
         epsilon = torch.finfo(f_true.dtype).eps
-        stddev_sum += torch.sqrt(_variance(fi, qti, qsi, fi_detached_x) + epsilon)
+        stddev_sum += torch.sqrt(_variance(fi, qti, qsi) + epsilon)
 
     return stddev_sum**2
 
