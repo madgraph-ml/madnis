@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="doc/static/logo.png" width="450", alt="MadNIS 2">
+  <img src="docs/source/_static/logo-light.png" width="450", alt="MadNIS">
 </p>
 
 <h2 align="center">Neural Multi-Channel Importance Sampling</h2>
@@ -30,7 +30,7 @@ pip install --editable .
 If you use this code or parts of it, please cite:
 
     @article{Heimel:2022wyj,
-    author = "Heimel, Theo and Winterhalder, Ramon and Butter, Anja and Isaacson, Joshua and 
+    author = "Heimel, Theo and Winterhalder, Ramon and Butter, Anja and Isaacson, Joshua and
     Krause, Claudius and Maltoni, Fabio and Mattelaer, Olivier and Plehn, Tilman",
     title = "{MadNIS -- Neural Multi-Channel Importance Sampling}",
     eprint = "2212.06172",
