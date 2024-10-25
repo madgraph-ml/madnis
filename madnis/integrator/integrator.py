@@ -15,7 +15,7 @@ from torch.optim.lr_scheduler import LRScheduler
 from ..nn import MLP, Flow
 from .buffer import Buffer
 from .integrand import Integrand
-from .losses import kl_divergence
+from .losses import MultiChannelLoss, kl_divergence, stratified_variance
 from .metrics import (
     IntegrationMetrics,
     UnweightingMetrics,
@@ -137,7 +137,7 @@ class Integrator(nn.Module):
         train_channel_weights: bool = False,
         cwnet: nn.Module | None = None,
         cwnet_kwargs: dict[str, Any] = {},
-        loss: Callable = kl_divergence,
+        loss: MultiChannelLoss | None = None,
         optimizer: (
             Optimizer | Callable[[Iterable[nn.Parameter]], Optimizer] | None
         ) = None,
@@ -174,7 +174,9 @@ class Integrator(nn.Module):
                 train_channel_weights is True, the cwnet is built using the `MLP` class.
             cwnet_kwargs: If cwnet is None and train_channel_weights is True, these keyword
                 arguments are passed to the `MLP` constructor.
-            loss: Loss function used for training.
+            loss: Loss function used for training. If not provided, the KL divergence is chosen in
+                the single-channel case and the stratified variance is chosen in the multi-channel
+                case.
             optimizer: optimizer for the training. Can be an optimizer object or function that is
                 called with the model parameters as argument and returns the optimizer. If None, the
                 Adam optimizer is used.
@@ -238,10 +240,13 @@ class Integrator(nn.Module):
         self.flow = flow
         self.cwnet = cwnet
         self.batch_size = batch_size
-        self.loss = loss
         self.uniform_channel_ratio = uniform_channel_ratio
         self.drop_zero_integrands = drop_zero_integrands
         self.batch_size_threshold = batch_size_threshold
+        if loss is None:
+            self.loss = stratified_variance if self.multichannel else kl_divergence
+        else:
+            self.loss = loss
 
         self.minimum_buffer_size = minimum_buffer_size
         self.buffered_steps = buffered_steps
