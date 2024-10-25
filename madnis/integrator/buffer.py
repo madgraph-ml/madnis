@@ -136,6 +136,8 @@ class Buffer(nn.Module):
             masked_size += torch.count_nonzero(mask)
             masks.append(mask)
         for buffer in self._buffer_fields():
+            if buffer is None:
+                continue
             buffer[:masked_size] = torch.cat(
                 [
                     buffer[batch_slice][mask]

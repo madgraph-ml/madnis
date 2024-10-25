@@ -277,6 +277,20 @@ class Integrator(nn.Module):
         # Dummy to determine device and dtype
         self.register_buffer("dummy", torch.zeros((1,)))
 
+        self.register_buffer(
+            "channel_id_map",
+            (
+                None
+                if self.integrand.channel_grouping is None
+                else torch.tensor(
+                    [
+                        channel.target_index
+                        for channel in self.integrand.channel_grouping.channels
+                    ]
+                )
+            ),
+        )
+
         if device is not None:
             self.to(device)
         if dtype is not None:
@@ -298,7 +312,9 @@ class Integrator(nn.Module):
             )
         else:
             log_alpha_prior = self._restore_prior(samples).log()
-        log_alpha = log_alpha_prior + self.cwnet(samples.y)
+        log_alpha = log_alpha_prior.clone()
+        mask = samples.func_vals != 0
+        log_alpha[mask] += self.cwnet(samples.y[mask])
         alpha = torch.zeros_like(log_alpha)
         alpha[:, self.active_channels_mask] = F.softmax(
             log_alpha[:, self.active_channels_mask], dim=1
@@ -372,11 +388,16 @@ class Integrator(nn.Module):
               - channel-wise number of samples, shape (channels, )
         """
         self.optimizer.zero_grad()
-        q_test = self.flow.prob(samples.x, channel=samples.channels)
+        q_test = torch.ones_like(samples.func_vals)
+        mask = samples.func_vals != 0.0  # TODO: think about cuts more carefully
+        q_test[mask] = self.flow.prob(samples.x[mask], channel=samples.channels[mask])
         f_true, means, variances, counts = self._compute_integral(samples)
-        loss = self.loss(
-            f_true, q_test, q_sample=samples.q_sample, channels=samples.channels
+        channels = (
+            samples.channels
+            if self.channel_id_map is None
+            else self.channel_id_map[samples.channels]
         )
+        loss = self.loss(f_true, q_test, q_sample=samples.q_sample, channels=channels)
         if loss.isnan().item():
             warnings.warn("nan batch: skipping optimization")
         else:
@@ -449,7 +470,7 @@ class Integrator(nn.Module):
         """
         if self.channel_dropping_threshold == 0.0:
             return 0
-        if (self.steps + 1) % self.channel_dropping_interval != 0:
+        if (self.step + 1) % self.channel_dropping_interval != 0:
             return 0
 
         mean_hist, _, count_hist = self.integration_history
@@ -610,9 +631,10 @@ class Integrator(nn.Module):
             if train and self.drop_zero_integrands:
                 mask = (weight != 0.0) & mask
             mask = ~(weight.isnan() | x.isnan().any(dim=1)) & mask
-            if mask is not True:
-                batch = batch.map(lambda t: t[mask])
-            current_batch_size += batch.x.shape[0]
+            current_batch_size += n if mask is True else mask.sum()
+            # if mask is not True:
+            #    batch = batch.map(lambda t: t[mask])
+            # current_batch_size += batch.x.shape[0]
             batches_out.append(batch)
             if current_batch_size > self.batch_size_threshold * n:
                 break
@@ -701,20 +723,26 @@ class Integrator(nn.Module):
             if capture_keyboard_interrupt:
                 signal.signal(signal.SIGINT, old_handler)
 
-    def integrate(self, n: int) -> tuple[float, float]:
+    def integrate(self, n: int, batch_size: int = 1000000) -> tuple[float, float]:
         """
         Draws new samples and computes the integral.
 
         Args:
             n: number of samples
+            batch_size: batch size used for sampling and calling the integrand
         Returns:
             tuple with the value of the integral and the MC integration error
         """
-        samples = self._get_samples(n)
-        _, means, variances, counts = self._compute_integral(samples)
+        samples = []
+        for n_batch in range(0, n, batch_size):
+            samples.append(self._get_samples(min(n - n_batch, batch_size)))
+        with torch.no_grad():
+            _, means, variances, counts = self._compute_integral(
+                SampleBatch.cat(samples)
+            )
         self.integration_history.store(means[None], variances[None], counts[None])
         integral = means.sum().item()
-        error = torch.sum(variances / counts).sqrt().item()
+        error = torch.nansum(variances / counts).sqrt().item()
         return integral, error
 
     def integral(self) -> tuple[float, float]:
@@ -727,8 +755,8 @@ class Integrator(nn.Module):
         """
         mean_hist, var_hist, count_hist = self.integration_history
         integrals = mean_hist.sum(dim=1)
-        variances = torch.sum(var_hist / count_hist, dim=1)
-        weights = 1 / variances
+        variances = torch.nansum(var_hist / count_hist, dim=1)
+        weights = torch.nan_to_num(1 / variances)
         weight_sum = weights.sum()
         integral = torch.sum(weights / weight_sum * integrals).item()
         error = torch.sqrt(1 / weight_sum).item()
