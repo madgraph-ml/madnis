@@ -16,6 +16,12 @@ from ..nn import MLP, Flow
 from .buffer import Buffer
 from .integrand import Integrand
 from .losses import kl_divergence
+from .metrics import (
+    IntegrationMetrics,
+    UnweightingMetrics,
+    integration_metrics,
+    unweighting_metrics,
+)
 
 
 @dataclass
@@ -343,7 +349,7 @@ class Integrator(nn.Module):
             )[:, 0]
             # abs needed for non-positive integrands
             f_all = alphas * samples.func_vals.abs()
-            f_div_q = f_all.detach() / samples.q_sample.detach()
+            f_div_q = f_all.detach() / samples.q_sample
             counts = torch.bincount(
                 samples.channels, minlength=self.integrand.channel_count
             )
@@ -363,7 +369,7 @@ class Integrator(nn.Module):
             f_true = f_all / means.sum()
         else:
             f_all = samples.func_vals.abs()
-            f_div_q = f_all.detach() / samples.q_sample.detach()
+            f_div_q = f_all / samples.q_sample
             f_true = f_all / f_div_q.mean()
             means = f_div_q.mean(dim=0, keepdim=True)
             counts = torch.full_like(means, f_div_q.shape[0])
@@ -604,9 +610,7 @@ class Integrator(nn.Module):
             Object containing a batch of samples
         """
         channels = (
-            self._get_channels(
-                self.batch_size, self._get_variance_weights(), uniform_channel_ratio
-            )
+            self._get_channels(n, self._get_variance_weights(), uniform_channel_ratio)
             if self.multichannel
             else None
         )
@@ -631,10 +635,10 @@ class Integrator(nn.Module):
             if train and self.drop_zero_integrands:
                 mask = (weight != 0.0) & mask
             mask = ~(weight.isnan() | x.isnan().any(dim=1)) & mask
-            current_batch_size += n if mask is True else mask.sum()
-            # if mask is not True:
-            #    batch = batch.map(lambda t: t[mask])
-            # current_batch_size += batch.x.shape[0]
+            # current_batch_size += n if mask is True else mask.sum()
+            if mask is not True:
+                batch = batch.map(lambda t: t[mask])
+            current_batch_size += batch.x.shape[0]
             batches_out.append(batch)
             if current_batch_size > self.batch_size_threshold * n:
                 break
@@ -723,9 +727,9 @@ class Integrator(nn.Module):
             if capture_keyboard_interrupt:
                 signal.signal(signal.SIGINT, old_handler)
 
-    def integrate(self, n: int, batch_size: int = 1000000) -> tuple[float, float]:
+    def integrate(self, n: int, batch_size: int = 100000) -> tuple[float, float]:
         """
-        Draws new samples and computes the integral.
+        Draws samples and computes the integral.
 
         Args:
             n: number of samples
@@ -745,6 +749,28 @@ class Integrator(nn.Module):
         error = torch.nansum(variances / counts).sqrt().item()
         return integral, error
 
+    def integration_metrics(
+        self, n: int, batch_size: int = 100000
+    ) -> IntegrationMetrics:
+        """
+        Draws samples and computes metrics for the total and channel-wise integration quality.
+
+        Args:
+            n: number of samples
+            batch_size: batch size used for sampling and calling the integrand
+        Returns:
+            ``IntegrationMetrics`` object, see its documentation for details
+        """
+        samples = []
+        for n_batch in range(0, n, batch_size):
+            samples.append(self._get_samples(min(n - n_batch, batch_size)))
+        with torch.no_grad():
+            _, means, variances, counts = self._compute_integral(
+                SampleBatch.cat(samples)
+            )
+        self.integration_history.store(means[None], variances[None], counts[None])
+        return integration_metrics(means, variances, counts)
+
     def integral(self) -> tuple[float, float]:
         """
         Returns the current estimate of the integral based on previous training iterations and calls
@@ -761,3 +787,32 @@ class Integrator(nn.Module):
         integral = torch.sum(weights / weight_sum * integrals).item()
         error = torch.sqrt(1 / weight_sum).item()
         return integral, error
+
+    def unweighting_metrics(
+        self, n: int, batch_size: int = 100000
+    ) -> IntegrationMetrics:
+        """
+        Draws samples and computes metrics for the total and channel-wise integration quality.
+
+        Args:
+            n: number of samples
+            batch_size: batch size used for sampling and calling the integrand
+        Returns:
+            ``IntegrationMetrics`` object, see its documentation for details
+        """
+        samples = []
+        for n_batch in range(0, n, batch_size):
+            samples.append(self._get_samples(min(n - n_batch, batch_size)))
+        samples = SampleBatch.cat(samples)
+
+        if self.multichannel:
+            with torch.no_grad():
+                alphas = torch.gather(
+                    self._get_alphas(samples), index=samples.channels[:, None], dim=1
+                )[:, 0]
+            weights = alphas * samples.func_vals.abs() / samples.q_sample
+        else:
+            weights = samples.func_vals.abs() / samples.q_sample
+        return unweighting_metrics(
+            weights, samples.channels, self.integrand.channel_count
+        )
