@@ -395,8 +395,13 @@ class Integrator(nn.Module):
         """
         self.optimizer.zero_grad()
         q_test = torch.ones_like(samples.func_vals)
-        mask = samples.func_vals != 0.0  # TODO: think about cuts more carefully
-        q_test[mask] = self.flow.prob(samples.x[mask], channel=samples.channels[mask])
+        if self.multichannel:
+            mask = samples.func_vals != 0.0  # TODO: think about cuts more carefully
+            q_test[mask] = self.flow.prob(
+                samples.x[mask], channel=samples.channels[mask]
+            )
+        else:
+            q_test = self.flow.prob(samples.x, channel=samples.channels)
         f_true, means, variances, counts = self._compute_integral(samples)
         channels = (
             samples.channels
@@ -513,13 +518,15 @@ class Integrator(nn.Module):
             self.max_stored_channel_weights is not None
             and self.integrand.has_channel_weight_prior
         ):
-            # Hack to ensure that the alpha for the channel that the sample was generated with
+            # ensure that the alpha for the channel that the sample was generated with
             # is always stored
             alphas_prior_mod = torch.scatter(
                 samples.alphas_prior,
                 dim=1,
                 index=samples.channels[:, None],
-                src=torch.tensor([[2.0]]).expand(*samples.alphas_prior.shape),
+                src=torch.tensor(
+                    [[2.0]], device=self.dummy.device, dtype=self.dummy.dtype
+                ).expand(*samples.alphas_prior.shape),
             )
             largest_alphas, alpha_indices = torch.sort(
                 alphas_prior_mod, descending=True, dim=1

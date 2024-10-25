@@ -31,7 +31,7 @@ class UnweightingMetrics:
 def unweighting_metrics(
     weights: torch.Tensor,
     channels: torch.Tensor | None = None,
-    channel_count: int = 1,
+    channel_count: int | None = None,
     replica_count: int = 1000,
 ) -> UnweightingMetrics | tuple[UnweightingMetrics, list[UnweightingMetrics]]:
     """
@@ -47,6 +47,8 @@ def unweighting_metrics(
         UnweightingMetrics objects for all channels.
     """
 
+    if channels is None:
+        channel_count = 1
     uweffs = []
     integrals = []
     for channel in range(channel_count):
