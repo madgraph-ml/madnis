@@ -9,6 +9,7 @@ Blablabla
    :caption: Usage
 
    installation
+   first-steps
    single-channel
    multi-channel
    flows

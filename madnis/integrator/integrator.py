@@ -31,15 +31,15 @@ class TrainingStatus:
 
     Args:
         step: optimization step
-        online_loss: loss from the optimization step on new samples
-        buffered_loss: average loss from the optimization steps on buffered samples
+        loss: loss from the optimization step
+        buffered: whether the optimization was performed on buffered samples
         learning_rate: current learning rate if learning rate scheduler is present
         dropped_channels: number of channels dropped after this optimization step
     """
 
     step: int
-    online_loss: float
-    buffered_loss: float | None
+    loss: float
+    buffered: bool
     learning_rate: float | None
     dropped_channels: int
 
@@ -277,9 +277,12 @@ class Integrator(nn.Module):
         self.channel_dropping_interval = channel_dropping_interval
         hist_shape = (self.integrand.channel_count or 1,)
         self.integration_history = Buffer(
-            integration_history_length, [hist_shape, hist_shape, hist_shape]
+            integration_history_length,
+            [hist_shape, hist_shape, hist_shape],
+            dtypes=[None, None, torch.int64],
         )
         self.step = 0
+        self.step_type_count = 0
         if self.multichannel:
             self.register_buffer(
                 "active_channels_mask",
@@ -377,7 +380,7 @@ class Integrator(nn.Module):
             f_div_q = f_all / samples.q_sample
             f_true = f_all / f_div_q.mean()
             means = f_div_q.mean(dim=0, keepdim=True)
-            counts = torch.full_like(means, f_div_q.shape[0])
+            counts = torch.full((len(means),), f_div_q.shape[0], device=means.device)
             variances = f_div_q.var(dim=0, keepdim=True)
         return f_true, means, variances, counts
 
@@ -472,7 +475,9 @@ class Integrator(nn.Module):
                 dtype=self.dummy.dtype,
             )
         _, var_hist, count_hist = self.integration_history
-        count_hist = torch.where(var_hist.isnan(), np.nan, count_hist)
+        count_hist = torch.where(
+            var_hist.isnan(), np.nan, count_hist.to(var_hist.dtype)
+        )
         hist_weights = count_hist / count_hist.nansum(dim=0)
         return torch.nansum(hist_weights * var_hist, dim=0).sqrt()
 
@@ -490,6 +495,7 @@ class Integrator(nn.Module):
             return 0
 
         mean_hist, _, count_hist = self.integration_history
+        count_hist = count_hist.to(mean_hist.dtype)
         mean_hist = torch.nan_to_num(mean_hist)
         hist_weights = count_hist / count_hist.sum(dim=0)
         channel_integrals = torch.nansum(hist_weights * mean_hist, dim=0)
@@ -665,32 +671,32 @@ class Integrator(nn.Module):
             Training status
         """
 
-        samples = self._get_samples(
-            self.batch_size, self.uniform_channel_ratio, train=True
-        )
-        online_loss, means, variances, counts = self._optimization_step(samples)
-        self._store_samples(samples)
-        self.integration_history.store(means[None], variances[None], counts[None])
+        if self.step_type_count == 0:
+            buffered = False
+            samples = self._get_samples(
+                self.batch_size, self.uniform_channel_ratio, train=True
+            )
+            loss, means, variances, counts = self._optimization_step(samples)
+            self._store_samples(samples)
+            self.integration_history.store(means[None], variances[None], counts[None])
 
-        if self.buffered_steps != 0 and self.buffer.size > self.minimum_buffer_size:
-            all_samples = SampleBatch(
+            if self.buffered_steps != 0 and self.buffer.size > self.minimum_buffer_size:
+                self.step_type_count += 1
+        else:
+            buffered = True
+            samples = SampleBatch(
                 *self.buffer.sample(self.buffered_steps * self.batch_size)
             )
-            buffered_loss = 0.0
-            count = 0
-            for samples in all_samples.split(self.batch_size):
-                loss, _, _, _ = self._optimization_step(samples)
-                buffered_loss += loss
-                count += 1
-            buffered_loss /= count
-        else:
-            buffered_loss = None
+            loss, _, _, _ = self._optimization_step(samples)
+            self.step_type_count = (self.step_type_count + 1) % (
+                self.buffered_steps + 1
+            )
 
         dropped_channels = self._disable_unused_channels()
         status = TrainingStatus(
             step=self.step,
-            online_loss=online_loss,
-            buffered_loss=buffered_loss,
+            loss=loss,
+            buffered=buffered,
             learning_rate=(
                 None if self.scheduler is None else self.scheduler.get_last_lr()[0]
             ),
