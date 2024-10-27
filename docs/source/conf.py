@@ -79,6 +79,7 @@ html_theme_options = {
     "sidebar_hide_name": True,
     "light_logo": "logo-light.png",
     "dark_logo": "logo-dark.png",
+    "source_view_link": "https://github.com/madgraph-ml/madnis/blob/main/docs/source/{filename}",
 }
 
 
