@@ -1,11 +1,12 @@
 from typing import Callable
 
 import torch
+import torch.nn as nn
 
 from .channel_grouping import ChannelGrouping
 
 
-class Integrand:
+class Integrand(nn.Module):
     """
     Class that wraps an integrand function and meta-data necessary to use advanced MadNIS
     features like learnable multi-channel weights, grouped channels and channel weight priors.
@@ -15,6 +16,7 @@ class Integrand:
         self,
         function: Callable,
         input_dim: int,
+        bounds: list[list[float]] | None = None,
         channel_count: int | None = None,
         remapped_dim: int | None = None,
         has_channel_weight_prior: bool = False,
@@ -43,7 +45,11 @@ class Integrand:
                   - ``y`` is the point after applying a channel-dependent mapping, shape
                     (n, remapped_dim)
                   - ``alpha`` is the prior channel weight, shape (n, channel_count).
-            input_dim: dimension of the integration space.
+            input_dim: dimension of the integration space
+            bounds: List of pairs ``[lower bound, upper bound]`` of the integration interval for
+                all dimensions. The integrand is rescaled so that the MadNIS training can be
+                performed on the unit hypercube. If None, the unit hypercube is used as integration
+                domain.
             channel_count: None in the single-channel case, specifies the number of channels
                 otherwise.
             remapped_dim: If different from None, it gives the dimension of a remapped space,
@@ -51,6 +57,7 @@ class Integrand:
             has_channel_weight_prior: If True, the integrand returns channel weights
             channel_grouping: ChannelGrouping object or None if all channels are independent
         """
+        super().__init__()
         self.input_dim = input_dim
         self.remapped_dim = remapped_dim
         self.channel_count = channel_count
@@ -65,8 +72,8 @@ class Integrand:
             else:
 
                 def func(x, channels):
-                    x, prior = function(x, channels)
-                    return x, None, prior
+                    w, prior = function(x, channels)
+                    return w, None, prior
 
                 self.function = func
         elif has_channel_weight_prior:
@@ -74,12 +81,25 @@ class Integrand:
         else:
 
             def func(x, channels):
-                x, y = function(x, channels)
-                return x, y, None
+                w, y = function(x, channels)
+                return w, y, None
 
             self.function = func
 
-    def __call__(
+        if bounds is not None:
+            bounds = torch.tensor(bounds)
+            self.register_buffer("scale", bounds[:, 1] - bounds[:, 0])
+            self.register_buffer("offset", bounds[:, 0])
+            self.register_buffer("scale_det", self.scale.prod())
+            old_func = self.function
+
+            def rescaled_func(x, channels):
+                w, y, prior = old_func(self.scale * x + self.offset, channels)
+                return self.scale_det * w, y, prior
+
+            self.function = rescaled_func
+
+    def forward(
         self, x: torch.Tensor, channels: torch.Tensor | None
     ) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor | None]:
         return self.function(x, channels)
