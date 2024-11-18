@@ -29,13 +29,16 @@ pip install --editable .
 
 If you use this code or parts of it, please cite:
 
-    @article{Heimel:2022wyj,
-    author = "Heimel, Theo and Winterhalder, Ramon and Butter, Anja and Isaacson, Joshua and
-    Krause, Claudius and Maltoni, Fabio and Mattelaer, Olivier and Plehn, Tilman",
-    title = "{MadNIS -- Neural Multi-Channel Importance Sampling}",
-    eprint = "2212.06172",
-    archivePrefix = "arXiv",
-    primaryClass = "hep-ph",
-    reportNumber = "IRMP-CP3-22-56, MCNET-22-22, FERMILAB-PUB-22-915-T",
-    month = "12",
-    year = "2022"}
+    @article{Heimel:2023ngj,
+      author = "Heimel, Theo and Huetsch, Nathan and Maltoni, Fabio and Mattelaer, Olivier and Plehn, Tilman and Winterhalder, Ramon",
+      title = "{The MadNIS reloaded}",
+      eprint = "2311.01548",
+      archivePrefix = "arXiv",
+      primaryClass = "hep-ph",
+      reportNumber = "IRMP-CP3-23-56, MCNET-23-12",
+      doi = "10.21468/SciPostPhys.17.1.023",
+      journal = "SciPost Phys.",
+      volume = "17",
+      number = "1",
+      pages = "023",
+      year = "2024"}
