@@ -59,7 +59,7 @@ class Integrand(nn.Module):
         """
         super().__init__()
         self.input_dim = input_dim
-        self.remapped_dim = remapped_dim
+        self.remapped_dim = input_dim if remapped_dim is None else remapped_dim
         self.channel_count = channel_count
         self.has_channel_weight_prior = has_channel_weight_prior
         self.channel_grouping = channel_grouping
@@ -68,14 +68,15 @@ class Integrand(nn.Module):
             self.function = lambda x, channels: (function(x), None, None)
         elif remapped_dim is None:
             if has_channel_weight_prior:
-                self.function = lambda x, channels: (function(x, channels), None, None)
-            else:
 
                 def func(x, channels):
                     w, prior = function(x, channels)
                     return w, None, prior
 
                 self.function = func
+            else:
+                self.function = lambda x, channels: (function(x, channels), None, None)
+
         elif has_channel_weight_prior:
             self.function = function
         else:

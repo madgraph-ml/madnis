@@ -328,7 +328,8 @@ class Integrator(nn.Module):
             log_alpha_prior = self._restore_prior(samples).log()
         log_alpha = log_alpha_prior.clone()
         mask = samples.func_vals != 0
-        log_alpha[mask] += self.cwnet(samples.y[mask])
+        y = samples.x if samples.y is None else samples.y
+        log_alpha[mask] += self.cwnet(y[mask])
         alpha = torch.zeros_like(log_alpha)
         alpha[:, self.active_channels_mask] = F.softmax(
             log_alpha[:, self.active_channels_mask], dim=1
@@ -355,9 +356,8 @@ class Integrator(nn.Module):
             alphas = torch.gather(
                 self._get_alphas(samples), index=samples.channels[:, None], dim=1
             )[:, 0]
-            # abs needed for non-positive integrands
-            f_all = alphas * samples.func_vals.abs()
-            f_div_q = f_all.detach() / samples.q_sample
+            f_true = alphas * samples.func_vals
+            f_div_q = f_true.detach() / samples.q_sample
             counts = torch.bincount(
                 samples.channels, minlength=self.integrand.channel_count
             )
@@ -374,13 +374,11 @@ class Integrator(nn.Module):
                 )
                 / counts
             )
-            f_true = f_all / means.sum()
         else:
-            f_all = samples.func_vals.abs()
-            f_div_q = f_all / samples.q_sample
-            f_true = f_all / f_div_q.mean()
+            f_div_q = samples.func_vals / samples.q_sample
+            f_true = samples.func_vals
             means = f_div_q.mean(dim=0, keepdim=True)
-            counts = torch.full((len(means),), f_div_q.shape[0], device=means.device)
+            counts = torch.full((1,), f_div_q.shape[0], device=means.device)
             variances = f_div_q.var(dim=0, keepdim=True)
         return f_true, means, variances, counts
 

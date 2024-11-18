@@ -48,9 +48,7 @@ def multi_channel_loss(loss: SingleChannelLoss) -> MultiChannelLoss:
             mask = channels == channel
             fi, qti, qsi = f_true[mask], q_test[mask], q_sample[mask]
             ni = mask.count_nonzero()
-            # TODO: not sure this makes sense. we give channels with less samples a higher weight in
-            # the total loss
-            loss_tot += q_sample.shape[0] / ni * loss(fi, qti, qsi) if ni > 0 else 0.0
+            loss_tot += ni / q_sample.shape[0] * loss(fi, qti, qsi) if ni > 0 else 0.0
         return loss_tot
 
     return wrapped_multi
@@ -81,12 +79,14 @@ def stratified_variance(
         return _variance(f_true, q_test, q_sample)
 
     stddev_sum = 0
+    abs_integral = 0
     for i in channels.unique():
         mask = channels == i
         fi, qti, qsi = f_true[mask], q_test[mask], q_sample[mask]
         stddev_sum += torch.sqrt(_variance(fi, qti, qsi) + dtype_epsilon(f_true))
+        abs_integral += torch.mean(fi.detach().abs() / qsi)
 
-    return stddev_sum**2
+    return (stddev_sum / abs_integral) ** 2
 
 
 def _variance(
@@ -132,6 +132,8 @@ def kl_divergence(
     Returns:
         computed KL divergence
     """
+    f_true = f_true.detach().abs()
+    f_true /= torch.mean(f_true / q_sample)
     log_q = torch.log(q_test)
     log_f = torch.log(f_true + dtype_epsilon(f_true))
     return torch.mean(f_true / q_sample * (log_f - log_q))
@@ -154,6 +156,8 @@ def rkl_divergence(
     Returns:
         computed KL divergence
     """
+    f_true = f_true.detach().abs()
+    f_true /= torch.mean(f_true / q_sample)
     ratio = q_test / q_sample
     log_q = torch.log(q_test)
     log_f = torch.log(f_true + dtype_epsilon(f_true))
