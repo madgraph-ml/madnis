@@ -15,8 +15,8 @@ class MLP(nn.Module):
         self,
         features_in: int,
         features_out: int,
-        layers: int,
-        units: int,
+        layers: int = 3,
+        units: int = 32,
         activation: Callable[[], nn.Module] = nn.ReLU,
         layer_constructor: Callable[[int, int], nn.Module] = nn.Linear,
     ):
