@@ -20,6 +20,7 @@ classifiers = [
 dependencies = [
   "numpy",
   "torch",
+  "torchtestcase",
 ]
 
 [project.optional-dependencies]
