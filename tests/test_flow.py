@@ -31,6 +31,19 @@ class FlowTest(torchtestcase.TorchTestCase):
         self.assertIsInstance(prob, torch.Tensor)
         self.assertEqual(torch.exp(log_prob), prob)
 
+    def test_transform(self):
+        batch_size = 10
+        input_dim = 5
+        flow = Flow(input_dim)
+        inputs = torch.randn(batch_size, input_dim)
+        forward, fw_jac = flow.transform(inputs)
+        inverse, inv_jac = flow.transform(forward, inverse=True)
+        forward2, _ = flow.transform(inverse)
+        self.assertIsInstance(forward, torch.Tensor)
+        self.assertEqual(inverse, inputs)
+        self.assertEqual(forward, forward2)
+        self.assertEqual(fw_jac, -inv_jac)
+
 
 if __name__ == "__main__":
     unittest.main()
