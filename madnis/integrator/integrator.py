@@ -455,11 +455,11 @@ class Integrator(nn.Module):
         if samples.alpha_channel_indices is None:
             return samples.alphas_prior
 
-        n_rest = self.integrand.channel_count - self.max_stored_channel_weights
         alphas_prior_reduced = samples.alphas_prior
         epsilon = torch.finfo(alphas_prior_reduced.dtype).eps
 
         # strategy 1: distribute difference to 1 evenly among non-stored channels
+        # n_rest = self.integrand.channel_count - self.max_stored_channel_weights
         # alphas_prior = torch.clamp(
         #    (1 - alphas_prior_reduced.sum(dim=1, keepdims=True)) / n_rest,
         #    min=epsilon,
@@ -669,7 +669,6 @@ class Integrator(nn.Module):
         )
 
         batches_out = []
-        x_mask_cache = []
         current_batch_size = 0
         while True:
             with torch.no_grad():
