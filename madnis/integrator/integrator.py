@@ -12,7 +12,7 @@ import torch.nn.functional as F
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import LRScheduler
 
-from ..nn import MLP, Flow
+from ..nn import MLP, Distribution, Flow
 from .buffer import Buffer
 from .integrand import Integrand
 from .losses import MultiChannelLoss, kl_divergence, stratified_variance
@@ -132,7 +132,7 @@ class Integrator(nn.Module):
         self,
         integrand: Callable[[torch.Tensor], torch.Tensor] | Integrand,
         dims: int = 0,
-        flow: Flow | None = None,
+        flow: Distribution | None = None,
         flow_kwargs: dict[str, Any] = {},
         train_channel_weights: bool = True,
         cwnet: nn.Module | None = None,
@@ -165,8 +165,9 @@ class Integrator(nn.Module):
                 In more complicated cases, like multi-channel integrals, use the `Integrand` class.
             dims: dimension of the integration space. Only required if a simple function is given
                 as integrand.
-            flow: normalizing flow used for the integration. If None, a flow is constructed using
-                the `Flow` class.
+            flow: sampling distribution used for the integration. If None, a flow is constructed
+                using the `Flow` class. Otherwise, it has to be compatible with a normalizing flow,
+                i.e. have the interface defined in the `Distribution` class.
             flow_kwargs: If flow is None, these keyword arguments are passed to the `Flow`
                 constructor.
             train_channel_weights: If True, construct a channel weight network and train it. Only

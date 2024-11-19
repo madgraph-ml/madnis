@@ -3,7 +3,7 @@ This module containes functions and classes that implement the different types o
 architectures necessary for (multi-channel) neural importance sampling.
 """
 
-from .flow import Flow
+from .flow import Distribution, Flow
 from .mlp import MLP, StackedMLP
 from .splines import rational_quadratic_spline, unconstrained_rational_quadratic_spline
 
@@ -13,4 +13,5 @@ __all__ = [
     "MLP",
     "StackedMLP",
     "Flow",
+    "Distribution",
 ]
