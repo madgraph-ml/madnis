@@ -154,6 +154,7 @@ class Integrator(nn.Module):
         max_stored_channel_weights: int | None = None,
         channel_dropping_threshold: float = 0.0,
         channel_dropping_interval: int = 100,
+        group_channels_in_loss: bool = False,
         device: torch.device | None = None,
         dtype: torch.dtype | None = None,
     ):
@@ -205,6 +206,9 @@ class Integrator(nn.Module):
                 integrand that is smaller than this threshold are dropped
             channel_dropping_interval: number of training steps after which channel dropping
                 is performed
+            group_channels_in_loss: If True, grouped channels are treated as a single channel in
+                the loss function. This may lead to more stable trainings but also prevents the
+                optimization of the channel weights of grouped channels relative to each other.
             device: torch device used for training and integration. If None, use default device.
             dtype: torch dtype used for training and integration. If None, use default dtype.
         """
@@ -215,7 +219,7 @@ class Integrator(nn.Module):
         if flow is None:
             flow = Flow(
                 dims_in=integrand.input_dim,
-                channels=integrand.channel_count,
+                channels=integrand.unique_channel_count(),
                 **flow_kwargs,
             )
         if cwnet is None and train_channel_weights:
@@ -275,6 +279,7 @@ class Integrator(nn.Module):
             self.buffer = None
         self.channel_dropping_threshold = channel_dropping_threshold
         self.channel_dropping_interval = channel_dropping_interval
+        self.group_channels_in_loss = group_channels_in_loss
         hist_shape = (self.integrand.channel_count or 1,)
         self.integration_history = Buffer(
             integration_history_length,
@@ -291,20 +296,6 @@ class Integrator(nn.Module):
         # Dummy to determine device and dtype
         self.register_buffer("dummy", torch.zeros((1,)))
 
-        self.register_buffer(
-            "channel_id_map",
-            (
-                None
-                if self.integrand.channel_grouping is None
-                else torch.tensor(
-                    [
-                        channel.target_index
-                        for channel in self.integrand.channel_grouping.channels
-                    ]
-                )
-            ),
-        )
-
         if device is not None:
             self.to(device)
         if dtype is not None:
@@ -320,6 +311,14 @@ class Integrator(nn.Module):
         Returns:
             channel weights, shape (n, channels)
         """
+        if self.cwnet is None:
+            if samples.alphas_prior is None:
+                return samples.x.new_full(
+                    (samples.x.shape[0], self.integrand.channel_count),
+                    1 / self.integrand.channel_count,
+                )
+            return self._restore_prior(samples)
+
         if samples.alphas_prior is None:
             log_alpha_prior = samples.x.new_zeros(
                 (samples.x.shape[0], self.integrand.channel_count)
@@ -404,15 +403,16 @@ class Integrator(nn.Module):
         if self.multichannel:
             mask = samples.func_vals != 0.0  # TODO: think about cuts more carefully
             q_test[mask] = self.flow.prob(
-                samples.x[mask], channel=samples.channels[mask]
+                samples.x[mask],
+                channel=self.integrand.remap_channels(samples.channels[mask]),
             )
         else:
             q_test = self.flow.prob(samples.x, channel=samples.channels)
         f_true, means, variances, counts = self._compute_integral(samples)
         channels = (
-            samples.channels
-            if self.channel_id_map is None
-            else self.channel_id_map[samples.channels]
+            self.integrand.remap_channels(samples.channels)
+            if self.group_channels_in_loss
+            else samples.channels
         )
         loss = self.loss(f_true, q_test, q_sample=samples.q_sample, channels=channels)
         if loss.isnan().item():
@@ -638,7 +638,7 @@ class Integrator(nn.Module):
             with torch.no_grad():
                 x, prob = self.flow.sample(
                     n,
-                    channel=channels,
+                    channel=self.integrand.remap_channels(channels),
                     return_prob=True,
                     device=self.dummy.device,
                     dtype=self.dummy.dtype,

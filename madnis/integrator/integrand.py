@@ -100,6 +100,45 @@ class Integrand(nn.Module):
 
             self.function = rescaled_func
 
+        self.register_buffer(
+            "channel_id_map",
+            (
+                None
+                if self.channel_grouping is None
+                else torch.tensor(
+                    [
+                        channel.group.group_index
+                        for channel in self.channel_grouping.channels
+                    ]
+                )
+            ),
+        )
+
+    def unique_channel_count(self) -> int:
+        """
+        Returns the number of channels, or, if some channels are grouped together, the number of
+        channel groups
+        """
+        if self.channel_grouping is None:
+            return self.channel_count
+        else:
+            return len(self.channel_grouping.groups)
+
+    def remap_channels(self, channels: torch.Tensor) -> torch.Tensor:
+        """
+        Remaps channel indices to the indices of their respective channel groups if a
+        ``ChannelGrouping`` object was provided, otherwise returns the indices unchanged.
+
+        Args:
+            channels: channel indices, shape (n, )
+        Returns:
+            remapped channel indices, shape (n, )
+        """
+        if self.channel_grouping is None:
+            return channels
+        else:
+            return self.channel_id_map[channels]
+
     def forward(
         self, x: torch.Tensor, channels: torch.Tensor | None
     ) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor | None]:
