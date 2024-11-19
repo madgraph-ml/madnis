@@ -134,7 +134,7 @@ class Integrator(nn.Module):
         dims: int = 0,
         flow: Flow | None = None,
         flow_kwargs: dict[str, Any] = {},
-        train_channel_weights: bool = False,
+        train_channel_weights: bool = True,
         cwnet: nn.Module | None = None,
         cwnet_kwargs: dict[str, Any] = {},
         loss: MultiChannelLoss | None = None,
@@ -216,13 +216,16 @@ class Integrator(nn.Module):
 
         if not isinstance(integrand, Integrand):
             integrand = Integrand(integrand, dims)
+        self.integrand = integrand
+        self.multichannel = integrand.channel_count is not None
+
         if flow is None:
             flow = Flow(
                 dims_in=integrand.input_dim,
                 channels=integrand.unique_channel_count(),
                 **flow_kwargs,
             )
-        if cwnet is None and train_channel_weights:
+        if cwnet is None and train_channel_weights and self.multichannel:
             cwnet = MLP(integrand.remapped_dim, integrand.channel_count, **cwnet_kwargs)
         if cwnet is None:
             parameters = flow.parameters()
@@ -239,8 +242,6 @@ class Integrator(nn.Module):
         else:
             self.scheduler = scheduler(optimizer)
 
-        self.integrand = integrand
-        self.multichannel = integrand.channel_count is not None
         self.flow = flow
         self.cwnet = cwnet
         self.batch_size = batch_size
