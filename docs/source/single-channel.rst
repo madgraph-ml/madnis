@@ -40,8 +40,28 @@ transformation and the corresponding Jacobian in the integrand function.
 Network architecture
 --------------------
 
+The default values for the normalizing flow hyperparameters in MadNIS will work well for many
+simple, low-dimensional integrands. For more complex functions, it can be necessary to build a
+larger network. This can be done with the ``flow_kwargs`` argument of the
+:py:class:`Integrator <madnis.integrator.Integrator>` class. They are passed on to the constructor
+of the :py:class:`Flow <madnis.nn.Flow>` class. By default, the flow is built with a sufficient
+number of coupling blocks such that every component is conditioned on every other component at least
+once. Hence, it is normally not necessary to set the number of coupling blocks by hand. In the
+following example, we change the settings for the depth and number of hidden nodes of the flow
+sub-networks.
+
+.. code-block:: python
+
+    integrator = Integrator(
+        lambda x: (2 * x).prod(dim=1),
+        dims = 4,
+        flow_kwargs={"layers": 4, "units": 64},
+    )
+
 Training hyperparameters
 ------------------------
+
+
 
 - loss
 - batch size
@@ -57,3 +77,7 @@ Dealing with zeros
 
 Device and data type
 --------------------
+
+
+Storing and loading trained models
+----------------------------------
