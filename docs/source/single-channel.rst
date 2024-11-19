@@ -61,13 +61,12 @@ sub-networks.
 Training hyperparameters
 ------------------------
 
-
-
 - loss
 - batch size
 - learning rate
 - optimizer
 - scheduler
+- custom networks
 
 Dealing with zeros
 ------------------

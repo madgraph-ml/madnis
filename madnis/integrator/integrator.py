@@ -3,7 +3,7 @@ import signal
 import warnings
 from collections.abc import Iterable
 from dataclasses import astuple, dataclass
-from typing import Any, Callable
+from typing import Any, Callable, Literal
 
 import numpy as np
 import torch
@@ -59,6 +59,10 @@ class SampleBatch:
             integration
         alpha_channel_indices: channel indices if not all prior channel weights are stored,
             otherwise None
+        weights: integration weight, shape (n, ). Only set when returned from Integrator.sample
+            function, otherwise None.
+        alphas: channel weights including learned correction, shape (n, channels). Only set when
+            returned from Integrator.sample function, otherwise None.
     """
 
     x: torch.Tensor
@@ -68,6 +72,8 @@ class SampleBatch:
     channels: torch.Tensor | None
     alphas_prior: torch.Tensor | None = None
     alpha_channel_indices: torch.Tensor | None = None
+    weights: torch.Tensor | None = None
+    alphas: torch.Tensor | None = None
 
     def __iter__(self) -> Iterable[torch.Tensor | None]:
         """
@@ -272,8 +278,20 @@ class Integrator(nn.Module):
                 None if integrand.channel_count is None else (),
                 None if not integrand.has_channel_weight_prior else (channel_count,),
                 None if self.max_stored_channel_weights is None else (channel_count,),
+                None,
+                None,
             ]
-            buffer_dtypes = [None, None, None, None, torch.int64, None, torch.int64]
+            buffer_dtypes = [
+                None,
+                None,
+                None,
+                None,
+                torch.int64,
+                None,
+                torch.int64,
+                None,
+                None,
+            ]
             self.buffer = Buffer(
                 buffer_capacity, buffer_fields, persistent=False, dtypes=buffer_dtypes
             )
@@ -456,16 +474,22 @@ class Integrator(nn.Module):
         alphas_prior.scatter_(1, samples.alpha_channel_indices, alphas_prior_reduced)
         return alphas_prior / alphas_prior.sum(dim=1, keepdims=True)
 
-    def _get_variance_weights(self, expect_full_history=True) -> torch.Tensor:
+    def _get_channel_contributions(
+        self,
+        expect_full_history: bool,
+        channel_weight_mode: Literal["variance", "mean"],
+    ) -> torch.Tensor:
         """
-        Uses the list of saved variances to compute the contribution of each channel for
+        Uses the list of saved variances or means to compute the contribution of each channel for
         stratified sampling.
 
         Args:
-            expect_full_history: If True, the variance history has to be full, otherwise uniform
+            expect_full_history: If True, the integration history has to be full, otherwise uniform
                 weights are returned.
+            channel_weight_mode: specifies whether the channels are weighted by their mean or
+                variance. Note that weighting by mean can lead to problems for non-positive functions
         Returns:
-            Weights for sampling the channels with shape (channels,)
+            weights for sampling the channels with shape (channels,)
         """
         min_len = self.integration_history.capacity if expect_full_history else 1
         if self.integration_history.size < min_len:
@@ -474,12 +498,13 @@ class Integrator(nn.Module):
                 device=self.dummy.device,
                 dtype=self.dummy.dtype,
             )
-        _, var_hist, count_hist = self.integration_history
+        mean_hist, var_hist, count_hist = self.integration_history
+        contrib_hist = mean_hist.abs() if channel_weight_mode == "mean" else var_hist
         count_hist = torch.where(
-            var_hist.isnan(), np.nan, count_hist.to(var_hist.dtype)
+            contrib_hist.isnan(), np.nan, count_hist.to(contrib_hist.dtype)
         )
         hist_weights = count_hist / count_hist.nansum(dim=0)
-        return torch.nansum(hist_weights * var_hist, dim=0).sqrt()
+        return torch.nansum(hist_weights * contrib_hist, dim=0).sqrt()
 
     def _disable_unused_channels(self) -> int:
         """
@@ -613,7 +638,11 @@ class Integrator(nn.Module):
         )
 
     def _get_samples(
-        self, n: int, uniform_channel_ratio: float = 0.0, train: bool = False
+        self,
+        n: int,
+        uniform_channel_ratio: float = 0.0,
+        train: bool = False,
+        channel_weight_mode: Literal["variance", "mean"] = "variance",
     ) -> SampleBatch:
         """
         Draws samples from the flow and evaluates the integrand
@@ -624,11 +653,17 @@ class Integrator(nn.Module):
                 that will be distributed uniformly first
             train: If True, the function is used in training mode, i.e. samples where the integrand
                 is zero will be removed if drop_zero_integrands is True
+            channel_weight_mode: specifies whether the channels are weighted by their mean or
+                variance. Note that weighting by mean can lead to problems for non-positive functions
         Returns:
             Object containing a batch of samples
         """
         channels = (
-            self._get_channels(n, self._get_variance_weights(), uniform_channel_ratio)
+            self._get_channels(
+                n,
+                self._get_channel_contributions(train, channel_weight_mode),
+                uniform_channel_ratio,
+            )
             if self.multichannel
             else None
         )
@@ -807,30 +842,71 @@ class Integrator(nn.Module):
         return integral, error
 
     def unweighting_metrics(
-        self, n: int, batch_size: int = 100000
-    ) -> IntegrationMetrics:
+        self,
+        n: int,
+        batch_size: int = 100000,
+        channel_weight_mode: Literal["uniform", "mean", "variance"] = "mean",
+    ) -> UnweightingMetrics:
         """
         Draws samples and computes metrics for the total and channel-wise integration quality.
+        This function is only suitable for functions that are non-negative everywhere.
 
         Args:
             n: number of samples
             batch_size: batch size used for sampling and calling the integrand
+            channel_weight_mode: specifies whether the channels are weighted by their mean,
+                variance or uniformly.
         Returns:
-            ``IntegrationMetrics`` object, see its documentation for details
+            ``UnweightingMetrics`` object, see its documentation for details
         """
+        samples = self.sample(n, batch_size, channel_weight_mode)
+        return unweighting_metrics(
+            samples.weights, samples.channels, self.integrand.channel_count
+        )
+
+    def sample(
+        self,
+        n: int,
+        batch_size: int = 100000,
+        channel_weight_mode: Literal["uniform", "mean", "variance"] = "variance",
+    ) -> SampleBatch:
+        """
+        Draws samples and computes their integration weight
+
+        Args:
+            n: number of samples
+            batch_size: batch size used for sampling and calling the integrand
+            channel_weight_mode: specifies whether the channels are weighted by their mean,
+                variance or uniformly. Note that weighting by mean can lead to problems for
+                non-positive functions
+        Returns:
+            ``SampleBatch`` object, see its documentation for details
+        """
+        if channel_weight_mode == "uniform":
+            uniform_channel_ratio = 1.0
+            channel_weight_mode = "variance"
+        else:
+            uniform_channel_ratio = 0.0
+
         samples = []
         for n_batch in range(0, n, batch_size):
-            samples.append(self._get_samples(min(n - n_batch, batch_size)))
-        samples = SampleBatch.cat(samples)
-
-        if self.multichannel:
-            with torch.no_grad():
-                alphas = torch.gather(
-                    self._get_alphas(samples), index=samples.channels[:, None], dim=1
-                )[:, 0]
-            weights = alphas * samples.func_vals.abs() / samples.q_sample
-        else:
-            weights = samples.func_vals.abs() / samples.q_sample
-        return unweighting_metrics(
-            weights, samples.channels, self.integrand.channel_count
-        )
+            batch = self._get_samples(
+                min(n - n_batch, batch_size),
+                uniform_channel_ratio,
+                False,
+                channel_weight_mode,
+            )
+            if self.multichannel:
+                with torch.no_grad():
+                    batch.alphas = self._get_alphas(batch)
+                batch.weights = (
+                    torch.gather(batch.alphas, index=batch.channels[:, None], dim=1)[
+                        :, 0
+                    ]
+                    * batch.func_vals
+                    / batch.q_sample
+                )
+            else:
+                batch.weights = batch.func_vals / batch.q_sample
+            samples.append(batch)
+        return SampleBatch.cat(samples)

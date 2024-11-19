@@ -77,19 +77,16 @@ channels and the learned channel weights.
 
 .. code-block:: python
 
-    with torch.no_grad():
-        samples = integrator._get_samples(100000)
-        alpha = integrator._get_alphas(samples)
-    y = samples.y if samples.y is not None else samples.x
+    samples = integrator.sample(100000)
     mask = samples.channels == 0
 
-    plt.hist2d(y[mask,0], y[mask,1], bins=30)
+    plt.hist2d(samples.x[mask,0], samples.x[mask,1], bins=30)
     plt.show()
 
-    plt.hist2d(y[~mask,0], y[~mask,1], bins=30)
+    plt.hist2d(samples.x[~mask,0], samples.x[~mask,1], bins=30)
     plt.show()
 
-    plt.scatter(y[:,0], y[:,1], c=alpha[:,0], marker=".", vmin=0, vmax=1)
+    plt.scatter(samples.x[:,0], samples.x[:,1], c=samples.alphas[:,0], marker=".", vmin=0, vmax=1)
     plt.xlim(0,1)
     plt.ylim(0,1)
     plt.colorbar()
@@ -248,7 +245,6 @@ this parameter to zero can lead to unstable trainings. Values like 0.1 tend to w
 situations. The training always starts with a warmup phase (depending on the
 ``integration_history_length``) where the channel is sampled uniformly.
 
-
 Channel dropping
 ----------------
 
@@ -258,7 +254,10 @@ entirely. To this end, the :py:class:`Integrator <madnis.integrator.Integrator>`
 options ``channel_dropping_threshold`` and ``channel_dropping_interval``. The latter specifies the
 number of training iterations between checks for channels that can be dropped. The former is a number
 between 0 and 1. All channels with a combined relative contribution to the total integral that is
-below this threshold are dropped.
+below this threshold are dropped. If a callback function is used to monitor the training progress,
+the number of channels that were dropped after a training iteration can be found in the
+``dropped_channels`` field of the :py:class:`TrainingStatus <madnis.integrator.TrainingStatus>`
+object passed to the callback function.
 
 
 Limiting memory usage of buffered training

@@ -6,7 +6,7 @@ evaluate the integration and sampling performance.
 from .buffer import Buffer
 from .channel_grouping import ChannelData, ChannelGroup, ChannelGrouping
 from .integrand import Integrand
-from .integrator import Integrator, TrainingStatus
+from .integrator import Integrator, SampleBatch, TrainingStatus
 from .losses import (
     kl_divergence,
     multi_channel_loss,
@@ -23,6 +23,7 @@ from .metrics import (
 __all__ = [
     "Integrator",
     "TrainingStatus",
+    "SampleBatch",
     "Integrand",
     "Buffer",
     "multi_channel_loss",
