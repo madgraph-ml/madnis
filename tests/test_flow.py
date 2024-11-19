@@ -32,10 +32,11 @@ class FlowTest(torchtestcase.TorchTestCase):
         self.assertEqual(torch.exp(log_prob), prob)
 
     def test_transform(self):
+        self.eps = 1e-8
         batch_size = 10
         input_dim = 5
         flow = Flow(input_dim)
-        inputs = torch.randn(batch_size, input_dim)
+        inputs = torch.rand(batch_size, input_dim)
         forward, fw_jac = flow.transform(inputs)
         inverse, inv_jac = flow.transform(forward, inverse=True)
         forward2, _ = flow.transform(inverse)
