@@ -47,6 +47,8 @@ class VegasPreTraining:
         """ """
         import vegas  # vegas module is optional dependency, so import locally
 
+        # TODO: also maybe replace this with our own VEGAS implementation in pytorch?
+
         self.integrator = integrator
         self.integrand = integrator.integrand
         self.damping = damping

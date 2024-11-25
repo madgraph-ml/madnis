@@ -155,21 +155,23 @@ def integration_metrics(
     """
     channel_square_errors = channel_variances / channel_counts
     integral = channel_means.sum().item()
+    integral_abs = abs(integral)
     count = channel_counts.sum().item()
     error = channel_square_errors.nansum().sqrt().item()
     channel_stddevs = channel_variances.nan_to_num().sqrt()
     channel_errors = channel_square_errors.nan_to_num().sqrt()
+    channel_means_abs = channel_means.abs()
     return IntegrationMetrics(
         integral=integral,
         count=count,
         error=error,
-        rel_error=error / integral,
-        rel_stddev=error * math.sqrt(count) / integral,
+        rel_error=error / integral_abs,
+        rel_stddev=error * math.sqrt(count) / integral_abs,
         rel_stddev_opt=(channel_stddevs.sum() * channel_stddevs).sum().sqrt().item()
         / integral,
         channel_counts=channel_counts.tolist(),
         channel_integrals=channel_means.tolist(),
         channel_errors=channel_errors.tolist(),
-        channel_rel_errors=(channel_errors / integral).tolist(),
-        channel_rel_stddevs=(channel_stddevs / channel_means.abs()).tolist(),
+        channel_rel_errors=(channel_errors / channel_means_abs).tolist(),
+        channel_rel_stddevs=(channel_stddevs / channel_means_abs).tolist(),
     )
