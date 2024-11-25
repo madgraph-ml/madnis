@@ -16,7 +16,18 @@ from .metrics import (
 
 @dataclass
 class VegasTrainingStatus:
-    pass
+    """
+    Contains the VEGAS training status to pass it to a callback function.
+
+    Args:
+        step: optimization step
+        variance: integration variance in this iteration. Combined for all channels in the
+            multi-channel case
+    """
+
+    step: int
+    variance: float
+    # TODO: maybe add more, like channel-wise statistics?
 
 
 class VegasPreTraining:
@@ -57,6 +68,7 @@ class VegasPreTraining:
             for _ in self.grid_channels
         ]
         self.rng = np.random.default_rng()
+        self.step = 0
 
     def train_step(self, samples_per_channel: int) -> VegasTrainingStatus:
         """
@@ -115,6 +127,12 @@ class VegasPreTraining:
                     x_torch, y, torch.from_numpy(1 / jac), func_vals, channels, alphas
                 ).map(lambda t: t.to(self.integrator.dummy.device))
             )
+        status = VegasTrainingStatus(
+            step=self.step,
+            variance=torch.sqrt(torch.nansum(variances / counts) * counts.sum()).item(),
+        )
+        self.step += 1
+        return status
 
     def train(
         self,
@@ -264,7 +282,7 @@ class VegasPreTraining:
             )
         else:
             means = samples.weights.mean(dim=0, keepdim=True)
-            counts = torch.full((1,), f_div_q.shape[0], device=means.device)
+            counts = torch.full((1,), samples.weights.shape[0], device=means.device)
             variances = samples.weights.var(dim=0, keepdim=True)
         return means, variances, counts
 
