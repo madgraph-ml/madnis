@@ -725,9 +725,7 @@ class Integrator(nn.Module):
                 self.step_type_count += 1
         else:
             buffered = True
-            samples = SampleBatch(
-                *self.buffer.sample(self.buffered_steps * self.batch_size)
-            )
+            samples = SampleBatch(*self.buffer.sample(self.batch_size))
             loss, _, _, _ = self._optimization_step(samples)
             self.step_type_count = (self.step_type_count + 1) % (
                 self.buffered_steps + 1

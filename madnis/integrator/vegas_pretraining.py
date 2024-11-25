@@ -110,6 +110,7 @@ class VegasPreTraining:
                 r = r[mask_np]
                 jac = jac[mask_np]
                 mask_torch = torch.as_tensor(mask_np)
+                x_torch = x_torch[mask_torch]
                 y = y[mask_torch]
                 func_vals = func_vals[mask_torch]
                 channels = channels[mask_torch]
@@ -131,7 +132,8 @@ class VegasPreTraining:
             )
         status = VegasTrainingStatus(
             step=self.step,
-            variance=torch.sqrt(torch.nansum(variances / counts) * counts.sum()).item(),
+            variance=torch.sqrt(torch.nansum(variances / counts) * counts.sum()).item()
+            / means.sum().item(),
         )
         self.step += 1
         return status
