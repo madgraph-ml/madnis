@@ -67,11 +67,12 @@ class VegasPreTraining:
         Returns:
             ``VegasTrainingStatus`` object containing metrics of the training progress
         """
-        n_channels = len(self.grid_channels)
+        n_channels = self.integrand.channel_count if self.integrator.multichannel else 1
         input_dim = self.integrand.input_dim
         variances = torch.zeros(n_channels)
         counts = torch.zeros(n_channels)
         means = torch.zeros(n_channels)
+        # TODO: maybe implement stratified training instead of uniform channels
         for grid, grid_channels in zip(self.grids, self.grid_channels):
             x = np.empty((samples_per_channel, input_dim), float)
             jac = np.empty(samples_per_channel, float)
@@ -190,23 +191,34 @@ class VegasPreTraining:
         Returns:
             ``SampleBatch`` object, see its documentation for details
         """
-        # if channel_weight_mode == "uniform":
-        #    n_per_channel =
-        # else:
-        samples_per_channel = n // len(self.grids)
+        if channel_weight_mode == "uniform":
+            uniform_channel_ratio = 1.0
+            channel_weight_mode = "variance"
+        else:
+            uniform_channel_ratio = 0.0
+        channel_weights = self.integrator._get_channel_contributions(
+            False, channel_weight_mode
+        )
+        samples_per_channel = self.integrator._get_channels(
+            n, channel_weights, uniform_channel_ratio, return_counts=True
+        )
+
         input_dim = self.integrand.input_dim
         samples = []
-        for i, grid in enumerate(self.grids):
-            x = np.empty((samples_per_channel, input_dim), float)
-            jac = np.empty(samples_per_channel, float)
+        for grid, grid_channels in zip(self.grids, self.grid_channels):
+            n_samples = samples_per_channel[grid_channels].sum()
+            x = np.empty((n_samples, input_dim), float)
+            jac = np.empty(n_samples, float)
 
-            r = self.rng.random((samples_per_channel, input_dim))
+            r = self.rng.random((n_samples, input_dim))
             grid.map(r, x, jac)
             x_torch = torch.as_tensor(x, dtype=self.integrator.dummy.dtype)
             if self.integrator.multichannel:
-                # TODO: no need for random numbers here
-                channels = torch.from_numpy(
-                    self.rng.choice(self.grid_channels[i], (samples_per_channel,))
+                channels = torch.cat(
+                    [
+                        torch.full((samples_per_channel[channel_index],), channel_index)
+                        for channel_index in grid_channels
+                    ]
                 )
             else:
                 channels = None
@@ -230,6 +242,32 @@ class VegasPreTraining:
             )
         return SampleBatch.cat(samples)
 
+    def _compute_integral(
+        self, samples: SampleBatch
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        if self.integrator.multichannel:
+            counts = torch.bincount(
+                samples.channels, minlength=self.integrand.channel_count
+            )
+            means = torch.bincount(
+                samples.channels,
+                weights=samples.weights,
+                minlength=self.integrand.channel_count,
+            ) / counts.clip(min=1)
+            variances = (
+                torch.bincount(
+                    samples.channels,
+                    weights=(samples.weights - means[samples.channels]).square(),
+                    minlength=self.integrand.channel_count,
+                )
+                / counts
+            )
+        else:
+            means = samples.weights.mean(dim=0, keepdim=True)
+            counts = torch.full((1,), f_div_q.shape[0], device=means.device)
+            variances = samples.weights.var(dim=0, keepdim=True)
+        return means, variances, counts
+
     def integrate(self, n: int) -> tuple[float, float]:
         """
         Draws samples and computes the integral.
@@ -240,7 +278,13 @@ class VegasPreTraining:
         Returns:
             tuple with the value of the integral and the MC integration error
         """
-        pass
+        means, variances, counts = self._compute_integral(self.sample(n))
+        self.integrator.integration_history.store(
+            means[None], variances[None], counts[None]
+        )
+        integral = means.sum().item()
+        error = torch.nansum(variances / counts).sqrt().item()
+        return integral, error
 
     def integration_metrics(
         self, n: int, batch_size: int = 100000
@@ -254,7 +298,11 @@ class VegasPreTraining:
         Returns:
             ``IntegrationMetrics`` object, see its documentation for details
         """
-        pass
+        means, variances, counts = self._compute_integral(self.sample(n))
+        self.integrator.integration_history.store(
+            means[None], variances[None], counts[None]
+        )
+        return integration_metrics(means, variances, counts)
 
     def unweighting_metrics(
         self,
@@ -274,4 +322,7 @@ class VegasPreTraining:
         Returns:
             ``UnweightingMetrics`` object, see its documentation for details
         """
-        pass
+        samples = self.sample(n, batch_size, channel_weight_mode)
+        return unweighting_metrics(
+            samples.weights, samples.channels, self.integrand.channel_count
+        )

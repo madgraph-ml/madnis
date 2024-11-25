@@ -171,5 +171,5 @@ def integration_metrics(
         channel_integrals=channel_means.tolist(),
         channel_errors=channel_errors.tolist(),
         channel_rel_errors=(channel_errors / integral).tolist(),
-        channel_rel_stddevs=(channel_stddevs / channel_means).tolist(),
+        channel_rel_stddevs=(channel_stddevs / channel_means.abs()).tolist(),
     )

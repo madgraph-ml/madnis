@@ -531,7 +531,7 @@ class Flow(nn.Module, Distribution):
         bins. This function then performs the bin reduction algorithm as described in [2311.01548].
 
         Args:
-            grid: widths of the VEGAS grid bins with shape (dims_in, vegas_bins+1) for single-channel
+            grid: edges of the VEGAS grid bins with shape (dims_in, vegas_bins+1) for single-channel
                 flows or (channels, dims_in, vegas_bins+1) for multi-channel flows
         """
         # Initialize width, heights and derivatives from VEGAS grid

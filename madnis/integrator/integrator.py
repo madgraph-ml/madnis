@@ -584,9 +584,10 @@ class Integrator(nn.Module):
         n: int,
         channel_weights: torch.Tensor,
         uniform_channel_ratio: float,
+        return_counts: bool = False,
     ) -> torch.Tensor:
         """
-        Create a tensor of channel indices in two steps:
+        Create a tensor of channel indices or number of samples per channel in two steps:
         1. Split up n * uniform_channel_ratio equally among all the channels
         2. Sample the rest of the events from the distribution given by channel_weights
            after correcting for the uniformly distributed samples
@@ -594,11 +595,14 @@ class Integrator(nn.Module):
         because there are events in every channel.
         Args:
             n: Number of samples as scalar integer tensor
-            channel_weights: Weights of the channels (not normalized) with shape (n,)
+            channel_weights: Weights of the channels (not normalized) with shape (channels,)
             uniform_channel_ratio: Number between 0.0 and 1.0 to determine the ratio of samples
                 that will be distributed uniformly first
+            return_counts: If True, return number of samples per channels, otherwise the channel
+                indices
         Returns:
-            Tensor of channel numbers with shape (n,)
+            If return_counts is True, Tensor with number of samples per channel, shape (channels,).
+            Otherwise, Tensor of channel numbers with shape (n,)
         """
         assert channel_weights.shape == (self.integrand.channel_count,)
         n_active_channels = torch.count_nonzero(self.active_channels_mask)
@@ -629,6 +633,9 @@ class Integrator(nn.Module):
                 n_per_channel[remove_chan] -= 1
             remove_chan = (remove_chan + 1) % self.integrand.channel_count
         assert n_per_channel.sum() == n
+
+        if return_counts:
+            return n_per_channel
 
         return torch.cat(
             [
