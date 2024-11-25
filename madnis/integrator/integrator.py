@@ -546,9 +546,10 @@ class Integrator(nn.Module):
             self.active_channels_mask[cri_argsort[:n_irrelevant]]
         )
         self.active_channels_mask[cri_argsort[:n_irrelevant]] = False
-        self.buffer.filter(
-            lambda batch: self.active_channels_mask[SampleBatch(*batch).channels]
-        )
+        if self.buffer is not None:
+            self.buffer.filter(
+                lambda batch: self.active_channels_mask[SampleBatch(*batch).channels]
+            )
         return n_disabled
 
     def _store_samples(self, samples: SampleBatch):
