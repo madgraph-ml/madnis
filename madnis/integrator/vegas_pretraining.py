@@ -110,26 +110,45 @@ class VegasPreTraining:
                 r = r[mask_np]
                 jac = jac[mask_np]
                 mask_torch = torch.as_tensor(mask_np)
+                if self.integrator.multichannel:
+                    zero_counts = torch.bincount(
+                        channels[~mask_torch], minlength=self.integrand.channel_count
+                    )
+                else:
+                    zero_counts = torch.full((1,), f.shape[0])
                 x_torch = x_torch[mask_torch]
                 y = y[mask_torch]
                 func_vals = func_vals[mask_torch]
                 channels = channels[mask_torch]
                 alphas = alphas[mask_torch]
+            else:
+                zero_counts = None
             grid.add_training_data(r, f**2)
             grid.adapt(alpha=self.damping)
 
             for chan in grid_channels:
-                variances[chan] = np.var(f)
-                counts[chan] = len(f)
-                means[chan] = np.mean(f)
-                self.integrator.integration_history.store(
-                    means[None], variances[None], counts[None]
-                )
+                mask = channels == chan
+                f_chan = torch.from_numpy(f)[mask]
+                counts_chan = len(f_chan)
+                if zero_counts is not None:
+                    counts_chan += zero_counts[chan]
+                counts[chan] = counts_chan
+                means[chan] = f_chan.sum() / counts_chan
+                variances[chan] = (f_chan - means[chan]).square().sum() / counts_chan
             self.integrator._store_samples(
                 SampleBatch(
-                    x_torch, y, torch.from_numpy(1 / jac), func_vals, channels, alphas
+                    x_torch,
+                    y,
+                    torch.from_numpy(1 / jac),
+                    func_vals,
+                    channels,
+                    alphas,
+                    zero_counts=zero_counts,
                 ).map(lambda t: t.to(self.integrator.dummy.device))
             )
+        self.integrator.integration_history.store(
+            means[None], variances[None], counts[None]
+        )
         status = VegasTrainingStatus(
             step=self.step,
             variance=torch.sqrt(torch.nansum(variances / counts) * counts.sum()).item()

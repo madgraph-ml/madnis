@@ -63,6 +63,9 @@ class SampleBatch:
             function, otherwise None.
         alphas: channel weights including learned correction, shape (n, channels). Only set when
             returned from Integrator.sample function, otherwise None.
+        zero_counts: channel-wise counts of samples with zero-weights that are not included in the
+            batch, shape (channels, ). This field is ignored by most methods, as it behaves
+            does not have the batch size as its first dimension
     """
 
     x: torch.Tensor
@@ -74,12 +77,13 @@ class SampleBatch:
     alpha_channel_indices: torch.Tensor | None = None
     weights: torch.Tensor | None = None
     alphas: torch.Tensor | None = None
+    zero_counts: torch.Tensor | None = None
 
     def __iter__(self) -> Iterable[torch.Tensor | None]:
         """
         Returns iterator over the fields of the class
         """
-        return iter(astuple(self))
+        return iter(astuple(self)[:-1])
 
     def map(self, func: Callable[[torch.Tensor], torch.Tensor]) -> "SampleBatch":
         """
@@ -113,19 +117,25 @@ class SampleBatch:
     @staticmethod
     def cat(batches: Iterable["SampleBatch"]) -> "SampleBatch":
         """
-        Concatenates multiple batches
+        Concatenates multiple batches. If the field zero_counts is not None, the zero_counts of
+        all batches are added.
 
         Args:
             batches: Iterable over SampleBatch objects
         Return:
             New SamplaBatch object containing the concatenated batches
         """
-        return SampleBatch(
+        cat_batch = SampleBatch(
             *(
                 None if item[0] is None else torch.cat(item, dim=0)
                 for item in zip(*batches)
             )
         )
+        if batches[0].zero_counts is not None:
+            cat_batch.zero_counts = torch.stack(
+                [batch.zero_counts for batch in batches], dim=1
+            ).sum(dim=1)
+        return cat_batch
 
 
 class Integrator(nn.Module):
@@ -200,8 +210,8 @@ class Integrator(nn.Module):
                 during the training if uniform_channel_ratio is different from one.
             drop_zero_integrands: If True, points with integrand zero are dropped and not used for
                 the optimization.
-            batch_size_threshold: If drop_zero_integrands is True, new samples are drawn until the
-                number of samples is at least batch_size_threshold * batch_size.
+            batch_size_threshold: New samples are drawn until the number of samples is at least
+                batch_size_threshold * batch_size.
             buffer_capacity: number of samples that are stored for buffered training
             minimum_buffer_size: minimal size of the buffer to run buffered training
             buffered_steps: number of optimization steps on buffered samples after every online
@@ -380,6 +390,8 @@ class Integrator(nn.Module):
             counts = torch.bincount(
                 samples.channels, minlength=self.integrand.channel_count
             )
+            if samples.zero_counts is not None:
+                counts += samples.zero_counts
             means = torch.bincount(
                 samples.channels,
                 weights=f_div_q,
@@ -419,12 +431,13 @@ class Integrator(nn.Module):
               - channel-wise number of samples, shape (channels, )
         """
         self.optimizer.zero_grad()
-        q_test = torch.ones_like(samples.func_vals)
+        # TODO: depending on the loss function and for drop_zero_weights=False, we can encounter
+        # zero-weight events here and it might be sufficient to evaluate the flow for events with
+        # func_val != 0. That might however give wrong results for other loss functions
         if self.multichannel:
-            mask = samples.func_vals != 0.0  # TODO: think about cuts more carefully
-            q_test[mask] = self.flow.prob(
-                samples.x[mask],
-                channel=self.integrand.remap_channels(samples.channels[mask]),
+            q_test = self.flow.prob(
+                samples.x,
+                channel=self.integrand.remap_channels(samples.channels),
             )
         else:
             q_test = self.flow.prob(samples.x, channel=samples.channels)
@@ -674,6 +687,7 @@ class Integrator(nn.Module):
             if self.multichannel
             else None
         )
+        channels_remapped = self.integrand.remap_channels(channels)
 
         batches_out = []
         current_batch_size = 0
@@ -681,7 +695,7 @@ class Integrator(nn.Module):
             with torch.no_grad():
                 x, prob = self.flow.sample(
                     n,
-                    channel=self.integrand.remap_channels(channels),
+                    channel=channels_remapped,
                     return_prob=True,
                     device=self.dummy.device,
                     dtype=self.dummy.dtype,
@@ -690,15 +704,27 @@ class Integrator(nn.Module):
             weight, y, alphas_prior = self.integrand(x, channels)
             batch = SampleBatch(x, y, prob, weight, channels, alphas_prior)
 
-            mask = True
-            if train and self.drop_zero_integrands:
-                mask = (weight != 0.0) & mask
-            mask = ~(weight.isnan() | x.isnan().any(dim=1)) & mask
-            # current_batch_size += n if mask is True else mask.sum()
-            if mask is not True:
+            if not train:
+                current_batch_size += batch.x.shape[0]
+            elif self.drop_zero_integrands:
+                mask = weight != 0.0
                 batch = batch.map(lambda t: t[mask])
-            current_batch_size += batch.x.shape[0]
+                if self.multichannel:
+                    batch.zero_counts = torch.bincount(
+                        channels[~mask], minlength=self.integrand.channel_count
+                    )
+                else:
+                    batch.zero_counts = torch.full(
+                        (1,), batch.x.shape[0], device=x.device
+                    )
+                current_batch_size += batch.x.shape[0]
+            else:
+                current_batch_size += weight.count_nonzero()
+
+            # mask = ~(weight.isnan() | x.isnan().any(dim=1)) & mask
             batches_out.append(batch)
+
+            # check this condition at the end such that the sampling runs at least once
             if current_batch_size > self.batch_size_threshold * n:
                 break
 
