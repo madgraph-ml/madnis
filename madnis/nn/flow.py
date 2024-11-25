@@ -37,19 +37,19 @@ class Distribution(ABC):
             n: number of samples
             channel: encodes the channel of the samples. It must have one of the following types:
 
-                - `Tensor`: integer tensor of shape (n, ), containing the channel index for every
+                - ``Tensor``: integer tensor of shape (n, ), containing the channel index for every
                   input sample;
-                - `list`: list of integers, specifying the number of samples in each channel;
-                - `int`: integer specifying a single channel containing all the samples;
-                - `None`: used in the single-channel case or to indicate that all channels contain
+                - ``list``: list of integers, specifying the number of samples in each channel;
+                - ``int``: integer specifying a single channel containing all the samples;
+                - ``None``: used in the single-channel case or to indicate that all channels contain
                   the same number of samples in the multi-channel case.
             return_log_prob: if True, also return the log-probabilities
             return_prob: if True, also return the probabilities
             device: device of the returned tensor. Only required if no condition is given.
             dtype: dtype of the returned tensor. Only required if no condition is given.
         Returns:
-            samples with shape (n, dims_in). Depending on the arguments `return_log_prob`,
-            `return_prob`, this function should also return the log-probabilities with shape (n, ),
+            samples with shape (n, dims_in). Depending on the arguments ``return_log_prob``,
+            ``return_prob``, this function should also return the log-probabilities with shape (n, ),
             the probabilities with shape (n, ).
         """
         pass
@@ -67,11 +67,11 @@ class Distribution(ABC):
             x: input data, shape (n, dims_in)
             channel: encodes the channel of the samples. It must have one of the following types:
 
-                - `Tensor`: integer tensor of shape (n, ), containing the channel index for every
+                - ``Tensor``: integer tensor of shape (n, ), containing the channel index for every
                   input sample;
-                - `list`: list of integers, specifying the number of samples in each channel;
-                - `int`: integer specifying a single channel containing all the samples;
-                - `None`: used in the single-channel case or to indicate that all channels contain
+                - ``list``: list of integers, specifying the number of samples in each channel;
+                - ``int``: integer specifying a single channel containing all the samples;
+                - ``None``: used in the single-channel case or to indicate that all channels contain
                   the same number of samples in the multi-channel case.
         Returns:
             log-probabilities with shape (n, )
@@ -92,11 +92,11 @@ class Distribution(ABC):
             x: input data, shape (n, dims_in)
             channel: encodes the channel of the samples. It must have one of the following types:
 
-                - `Tensor`: integer tensor of shape (n, ), containing the channel index for every
+                - ``Tensor``: integer tensor of shape (n, ), containing the channel index for every
                   input sample;
-                - `list`: list of integers, specifying the number of samples in each channel;
-                - `int`: integer specifying a single channel containing all the samples;
-                - `None`: used in the single-channel case or to indicate that all channels contain
+                - ``list``: list of integers, specifying the number of samples in each channel;
+                - ``int``: integer specifying a single channel containing all the samples;
+                - ``None``: used in the single-channel case or to indicate that all channels contain
                   the same number of samples in the multi-channel case.
         Returns:
             probabilities with shape (n, )
@@ -304,11 +304,11 @@ class Flow(nn.Module, Distribution):
             x: input data, shape (n, dims_in)
             channel: encodes the channel of the samples. It must have one of the following types:
 
-                - `Tensor`: integer tensor of shape (n, ), containing the channel index for every
+                - ``Tensor``: integer tensor of shape (n, ), containing the channel index for every
                   input sample;
-                - `list`: list of integers, specifying the number of samples in each channel;
-                - `int`: integer specifying a single channel containing all the samples;
-                - `None`: used in the single-channel case or to indicate that all channels contain
+                - ``list``: list of integers, specifying the number of samples in each channel;
+                - ``int``: integer specifying a single channel containing all the samples;
+                - ``None``: used in the single-channel case or to indicate that all channels contain
                   the same number of samples in the multi-channel case.
             inverse: if True, use inverted transformation (i.e. the sampling direction)
             c: condition, shape (n, dims_c) or None for an unconditional flow
@@ -405,16 +405,16 @@ class Flow(nn.Module, Distribution):
             x: input data, shape (n, dims_in)
             channel: encodes the channel of the samples. It must have one of the following types:
 
-                - `Tensor`: integer tensor of shape (n, ), containing the channel index for every
+                - ``Tensor``: integer tensor of shape (n, ), containing the channel index for every
                   input sample;
-                - `list`: list of integers, specifying the number of samples in each channel;
-                - `int`: integer specifying a single channel containing all the samples;
-                - `None`: used in the single-channel case or to indicate that all channels contain
+                - ``list``: list of integers, specifying the number of samples in each channel;
+                - ``int``: integer specifying a single channel containing all the samples;
+                - ``None``: used in the single-channel case or to indicate that all channels contain
                   the same number of samples in the multi-channel case.
             c: condition, shape (n, dims_c) or None for an unconditional flow
             return_latent: if True, also return the latent space vector
         Returns:
-            log-probabilities with shape (n, ). If `return_latent` is True, it also returns the
+            log-probabilities with shape (n, ). If ``return_latent`` is True, it also returns the
             latent space vector with shape (n, dims_in).
         """
         z, jac = self.transform(x, channel, False, c)
@@ -438,16 +438,16 @@ class Flow(nn.Module, Distribution):
             x: input data, shape (n, dims_in)
             channel: encodes the channel of the samples. It must have one of the following types:
 
-                - `Tensor`: integer tensor of shape (n, ), containing the channel index for every
+                - ``Tensor``: integer tensor of shape (n, ), containing the channel index for every
                   input sample;
-                - `list`: list of integers, specifying the number of samples in each channel;
-                - `int`: integer specifying a single channel containing all the samples;
-                - `None`: used in the single-channel case or to indicate that all channels contain
+                - ``list``: list of integers, specifying the number of samples in each channel;
+                - ``int``: integer specifying a single channel containing all the samples;
+                - ``None``: used in the single-channel case or to indicate that all channels contain
                   the same number of samples in the multi-channel case.
             c: condition, shape (n, dims_c) or None for an unconditional flow
             return_latent: if True, also return the latent space vector
         Returns:
-            probabilities with shape (n, ). If `return_latent` is True, it also returns the
+            probabilities with shape (n, ). If ``return_latent`` is True, it also returns the
             latent space vector with shape (n, dims_in).
         """
         log_prob, z = self.log_prob(x, channel, c, True)
@@ -474,11 +474,11 @@ class Flow(nn.Module, Distribution):
             n: number of samples. Only required if no condition is given.
             channel: encodes the channel of the samples. It must have one of the following types:
 
-                - `Tensor`: integer tensor of shape (n, ), containing the channel index for every
+                - ``Tensor``: integer tensor of shape (n, ), containing the channel index for every
                   input sample;
-                - `list`: list of integers, specifying the number of samples in each channel;
-                - `int`: integer specifying a single channel containing all the samples;
-                - `None`: used in the single-channel case or to indicate that all channels contain
+                - ``list``: list of integers, specifying the number of samples in each channel;
+                - ``int``: integer specifying a single channel containing all the samples;
+                - ``None``: used in the single-channel case or to indicate that all channels contain
                   the same number of samples in the multi-channel case.
             return_log_prob: if True, also return the log-probabilities
             return_prob: if True, also return the probabilities
@@ -487,8 +487,8 @@ class Flow(nn.Module, Distribution):
             c: condition, shape (n, dims_c) or None for an unconditional flow
             return_latent: if True, also return the latent space vector
         Returns:
-            samples with shape (n, dims_in). Depending on the arguments `return_log_prob`,
-            `return_prob` and `return_latent`, this function will also return the log-probabilities
+            samples with shape (n, dims_in). Depending on the arguments ``return_log_prob``,
+            ``return_prob`` and ``return_latent``, this function will also return the log-probabilities
             with shape (n, ), the probabilities with shape (n, ) and the latent space vector with
             shape (n, dims_in).
         """
@@ -523,3 +523,88 @@ class Flow(nn.Module, Distribution):
             return x, *extra_returns
         else:
             return x
+
+    def init_with_grid(self, grid: torch.Tensor):
+        """
+        Initializes the flow using a VEGAS grid, i.e. from bins with varying width and equal
+        probability. The number of bins of this grid should be larger than the number of RQ spline
+        bins. This function then performs the bin reduction algorithm as described in [2311.01548].
+
+        Args:
+            grid: widths of the VEGAS grid bins with shape (dims_in, vegas_bins+1) for single-channel
+                flows or (channels, dims_in, vegas_bins+1) for multi-channel flows
+        """
+        # Initialize width, heights and derivatives from VEGAS grid
+        w = grid.diff(dim=-1)
+        h = grid.new_full(w.shape, 1 / w.shape[-1])
+        d = (
+            torch.cat((w[..., :1], (w[..., :-1] + w[..., 1:]) / 2, w[..., -1:]), dim=-1)
+            * w.shape[-1]
+        )
+
+        # Run bin reduction algorithm
+        while w.shape[-1] > self.bins:
+            mask = (w[..., :-1] + w[..., 1:] < 2 / self.bins) & (
+                h[..., :-1] + h[..., 1:] < 2 / self.bins
+            )
+            mask = mask | ~torch.any(mask, dim=-1, keepdim=True)
+            diff = torch.abs(
+                w[..., 1:] / h[..., 1:] - w[..., :-1] / h[..., :-1],
+            ) + 1e9 * (~mask)
+            mindiff = torch.argmin(diff, dim=-1, keepdim=True)
+            delete_mask = torch.ones(
+                w.shape, dtype=torch.bool, device=w.device
+            ).scatter_(-1, mindiff, 0)
+            next_shape = (*w.shape[:-1], w.shape[-1] - 1)
+            w_col = w.gather(-1, mindiff)
+            h_col = h.gather(-1, mindiff)
+            w = w[delete_mask].reshape(next_shape)
+            w.scatter_add_(-1, mindiff, w_col)
+            h = h[delete_mask].reshape(next_shape)
+            h.scatter_add_(-1, mindiff, h_col)
+            d = torch.cat(
+                (d[..., :1], d[..., 1:][delete_mask].reshape(next_shape)), dim=-1
+            )
+
+        # Invert softmax and softplus functions applied to subnet outputs
+        w_unnorm = torch.log(
+            (w - self.min_bin_width) / (1 - self.bins * self.min_bin_width)
+        )
+        w_unnorm -= torch.mean(w_unnorm, dim=-1, keepdim=True)
+        h_unnorm = torch.log(
+            (h - self.min_bin_height) / (1 - self.bins * self.min_bin_height)
+        )
+        h_unnorm -= torch.mean(h_unnorm, dim=-1, keepdim=True)
+        d_unnorm = torch.log(
+            torch.clip(
+                torch.exp(
+                    (self.min_bin_derivative + math.log(2)) / d
+                    - self.min_bin_derivative
+                )
+                - 1,
+                min=self.min_bin_derivative * 1e-5,
+            )
+        )
+        rqs_grid = torch.cat((w_unnorm, h_unnorm, d_unnorm), dim=-1)
+
+        # Initialize weights and biases of the last layer of the subnets of the first
+        # two coupling blocks
+        if len(grid.shape) == 3:
+            weights_0 = self.subnets[0].weights[-1]
+            weights_1 = self.subnets[1].weights[-1]
+            biases_0 = self.subnets[0].biases[-1]
+            biases_1 = self.subnets[1].biases[-1]
+        else:
+            weights_0 = self.subnets[0].layers[-1].weight
+            weights_1 = self.subnets[1].layers[-1].weight
+            biases_0 = self.subnets[0].layers[-1].bias
+            biases_1 = self.subnets[1].layers[-1].bias
+        nn.init.zeros_(weights_0)
+        nn.init.zeros_(weights_1)
+        with torch.no_grad():
+            biases_0.copy_(
+                rqs_grid[..., ~self.condition_masks[0], :].flatten(start_dim=-2)
+            )
+            biases_1.copy_(
+                rqs_grid[..., ~self.condition_masks[1], :].flatten(start_dim=-2)
+            )

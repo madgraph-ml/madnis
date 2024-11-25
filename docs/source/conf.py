@@ -34,16 +34,6 @@ def linkcode_resolve(domain, info):
         return None
     if not info["module"]:
         return None
-    print(info["fullname"])
-    filename = info["module"].replace(".", "/")
-    return f"https://github.com/madgraph-ml/madnis/blob/main/{filename}.py"
-
-
-def linkcode_resolve(domain, info):
-    if domain != "py":
-        return None
-    if not info["module"]:
-        return None
 
     mod = importlib.import_module(info["module"])
     if "." in info["fullname"]:
