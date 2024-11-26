@@ -153,6 +153,7 @@ reweighting with the integration weights.
 .. code-block:: python
 
     import matplotlib.pyplot as plt
+    import numpy as np
     samples = integrator.sample(100000)
     bins = np.linspace(0, 1, 30)
     plt.hist(samples.x[:,0].numpy(), bins, histtype="step", label="learned", density=True)

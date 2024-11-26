@@ -157,11 +157,11 @@ class Flow(nn.Module, Distribution):
             units: number of subnet hidden nodes. Only relevant if subnet_constructor=None.
             activation: function that builds a nn.Module used as activation function. Only
                 relevant if subnet_constructor=None.
-            layer_construction: function used to construct the subnet layers, given the number of
+            layer_constructor: function used to construct the subnet layers, given the number of
                 input and output features. Only relevant if subnet_constructor=None.
             channels: If None, build single-channel flow. If integer, build multi-channel flow
                 with this number of channels.
-            mappings: Specifies a single mapping function or a list of mapping functions (one per
+            mapping: Specifies a single mapping function or a list of mapping functions (one per
                 channel) that are applied to the input before it enters the flow (forward
                 direction) or after drawing samples using the flow (inverse direction). The
                 arguments of the function are the input data and a boolean whether the
