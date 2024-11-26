@@ -716,7 +716,7 @@ class Integrator(nn.Module):
                     )
                 else:
                     batch.zero_counts = torch.full(
-                        (1,), batch.x.shape[0], device=x.device
+                        (1,), torch.count_nonzero(~mask), device=x.device
                     )
                 current_batch_size += batch.x.shape[0]
             else:

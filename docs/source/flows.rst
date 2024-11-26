@@ -2,7 +2,7 @@ Using the MadNIS flow library
 =============================
 
 In addition to neural importance sampling, the normalizing flow implementation in the MadNIS package
-can also be used in other applications. The following examples show how unconditional and
+can also be used for other applications. The following examples illustrate how unconditional and
 conditional MadNIS flows can be trained on a toy training dataset.
 
 Simple flow training

@@ -18,7 +18,9 @@ Gaussian peak,
 with :math:`d = 0.3` and :math:`\sigma = 0.2`. The integral of this function over :math:`[0,1]^2`
 is 0.
 
-FIGURE
+.. figure:: figs/multi-integrand.png
+
+    Toy integrand for multi-channel integration
 
 MadNIS splits up the integrand into channels by multiplying it with a channel weight
 :math:`\alpha_i(x)` that is normalized over all channels
@@ -77,6 +79,7 @@ channels and the learned channel weights.
 
 .. code-block:: python
 
+    import matplotlib.pyplot as plt
     samples = integrator.sample(100000)
     mask = samples.channels == 0
 
@@ -95,6 +98,10 @@ channels and the learned channel weights.
 We can see that each channel only focuses on a single peak of the distribution and the channel
 weights split the integration domain into two parts.
 
+.. figure:: figs/multi-noprior.png
+
+    Histograms of the two different learned channel mappings and learned channel weights.
+
 Adding mappings and prior channel weights
 -----------------------------------------
 
@@ -112,7 +119,11 @@ This mapping is invertible and its Jacobian is given by
 .. math::
     \frac{\partial y}{\partial x} = \frac{y(1-y)}{x(1-x)} \; .
 
-The resulting probability distributions are shown in FIGURE
+The following figure visualizes the resulting probability distributions.
+
+.. figure:: figs/multi-mapping.png
+
+    Probability distributions for the analytic channel mappings.
 
 Furthermore, we can specify channel weights that are used as a starting point instead of the uniform
 initialization from the previous example. One way to define such channel weights is to define them
@@ -131,7 +142,7 @@ and then use this to define the channel weights as
     \alpha_{0,1} = \frac{f_i(x)}{f_0(x) + f_1(x)} \; .
 
 These mappings and channel weights have to be computed as part of the call to the integrand. Again,
-this ca be done using the :py:class:`Integrand <madnis.integrator.Integrand>` class.
+this can be done using the :py:class:`Integrand <madnis.integrator.Integrand>` class.
 
 .. code-block:: python
 
@@ -167,10 +178,13 @@ Therefore, we have to specify their dimension using the ``remapped_dim`` paramet
 set the parameter ``has_channel_weight_prior`` to ``True``. The second input to ``integrand_func``
 contains the index of the channels that each sample is in. The function returns the integrand value
 multiplied with the Jacobian from the mapping, the remapped point and the channel weights. After
-the training, we can again take a look at the learned channel mapping and weights using the plotting
-code from above.
+the training, we can again take a look at the learned channel mappings and weights using the
+plotting code from above.
 
-FIGURE
+.. figure:: figs/multi-withprior.png
+
+    Histograms of the two different learned channel mappings and learned channel weights
+    for a training with analytical channel mappings and prior channel weights.
 
 Like before, every channel has learned to map out one peak of the integrands and the channel weights
 nicely separate the integration space into two halves. Note that if good prior weights are provided,

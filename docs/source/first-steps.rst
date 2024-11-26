@@ -110,7 +110,8 @@ The pretty-printed output is
                        channel_rel_errors=[0.0005457725492306054],
                        channel_rel_stddevs=[0.17258842289447784])
 
-Most of the fields of the resulting :py:class:`IntegrationMetrics <madnis.integrator.IntegrationMetrics>` object only become useful for
+Most of the fields of the resulting
+:py:class:`IntegrationMetrics <madnis.integrator.IntegrationMetrics>` object only become useful for
 multi-channel integration. One useful quantity for simple single-channel integrals is the relative
 standard deviation, called ``rel_stddev``, as it measures the integration error independent of the
 value of the integral and the number of samples. This makes it easier to compare the performance
@@ -138,6 +139,40 @@ From this object, we can read the unweighting efficiency, here around 54%. This 
 fraction of our (weighted) samples would remain if we applied an accept-reject step based on their
 weights. In case we have regions in our integration domain where the integrand is zero, the cut
 efficiency tells us how well our sampler was able to avoid these regions.
+
+Generating samples
+------------------
+
+After the integrator was trained, we can also use it to generate new samples from the distribution
+using the :py:meth:`sample <madnis.integrator.Integrator.sample>` method. It returns a
+:py:class:`SampleBatch <madnis.integrator.SampleBatch>` object containing the sampled points, the
+corresponding integrand value, the sampling probability and the integration weights. In the
+following example, we use them to make a histogram of the learned distribution with and without
+reweighting with the integration weights.
+
+.. code-block:: python
+
+    import matplotlib.pyplot as plt
+    samples = integrator.sample(100000)
+    bins = np.linspace(0, 1, 30)
+    plt.hist(samples.x[:,0].numpy(), bins, histtype="step", label="learned", density=True)
+    plt.hist(
+        samples.x[:,0].numpy(),
+        bins,
+        weights=samples.weights.numpy(),
+        histtype="step",
+        label="reweighted",
+        density=True
+    )
+    plt.xlabel("$x_1$")
+    plt.xlim(0, 1)
+    plt.legend()
+
+This results in the following plot:
+
+.. figure:: figs/first-steps-sample.png
+
+    Generated samples with and without reweighting
 
 Buffered training
 -----------------

@@ -115,7 +115,7 @@ class VegasPreTraining:
                         channels[~mask_torch], minlength=self.integrand.channel_count
                     )
                 else:
-                    zero_counts = torch.full((1,), f.shape[0])
+                    zero_counts = torch.full((1,), torch.count_nonzero(~mask_torch))
                 x_torch = x_torch[mask_torch]
                 y = y[mask_torch]
                 func_vals = func_vals[mask_torch]

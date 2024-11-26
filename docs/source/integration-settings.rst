@@ -1,8 +1,9 @@
 Integration settings
 ====================
 
-In the last tutorial, we have discussed the most basic options when building a MadNIS integrator.
-This page describes further options to adapt the integrator for different applications.
+In the last two tutorial, we have discussed how the MadNIS integrator can be used for single- and
+multi-channel integration. This page describes further options to adapt the integrator for
+different applications.
 
 Changing the integration domain
 -------------------------------
@@ -107,11 +108,51 @@ the trainable parameters. For instance, to use the ``SGD`` optimizer instead of 
         optimizer = lambda params: SGD(params, lr=1e-3)
     )
 
+VEGAS pre-training
+------------------
+
+VEGAS is a commonly used algorithm for importance sampling that works by assuming a factorized
+distribution, i.e. no correlations between different dimensions. It then models the one-dimensional distributions using variable-width bins with uniform probabilities. This makes training VEGAS much
+faster than the training of a neural network using stochastic gradient descent. We can use that to
+our advantage in MadNIS by training a VEGAS grid first and then using it to initialize our
+normalizing flow, using the :py:class:`VegasPreTraining <madnis.integrator.VegasPreTraining>` class.
+It is constructed using an :py:class:`Integrator <madnis.integrator.Integrator>` instance and uses
+the same integrand, sample buffer and integration cache. It relies on the ``vegas`` package which is
+an optional dependency of MadNIS. The pre-training can be performed with the following code:
+
+.. code-block:: python
+
+    # Construct integrator here
+
+    vegas = VegasPreTraining(integrator, bins=64, damping=0.8)
+    vegas.train([1000,2000,4000])
+    vegas.initialize_integrator()
+
+    # Regular MadNIS training here
+
+The only two hyperparameters are the number of bins for the VEGAS grid and the damping parameter
+that influences the VEGAS convergence (high: fast adaption, low: stable convergence). The parameters
+of the train method specify the number of samples in each VEGAS iteration (per channel in the
+multi-channel case). The last line initializes the normalizing flow in the integrator.
+
+Similar to the :py:class:`Integrator <madnis.integrator.Integrator>` class, the
+:py:class:`VegasPreTraining <madnis.integrator.VegasPreTraining>` class also has methods ``sample``,
+``integrate``, ``integration_metrics`` and ``unweighting_metrics`` which directly draw samples using
+the VEGAS grid. This allows us to compare the VEGAS performance and the normalizing flow performance
+directly.
+
 Dealing with zeros
 ------------------
 
-- drop zero integrand
-- batch size threshold
+The MadNIS integrator has two parameters that control how it treats samples with an integrand value
+of zero. The parameter ``batch_size_threshold`` controls the minimum amount of samples with non-zero
+values per batch relative to the total batch size during the training. More samples are generated
+until the number is above this threshold. In addition, the parameter ``drop_zero_integrands``
+removes samples with zero-integrand value from the optimization. Depending on the loss function,
+this may change the optimization objective. It is especially useful in situations where the
+integrand evaluation more expensive for samples with non-zero weight. In that case, improving the
+training for samples with non-zero weights at the cost of a lower cut efficiency can be beneficial
+for the overall performance.
 
 Device and data type
 --------------------
