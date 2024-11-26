@@ -1,9 +1,10 @@
 Installation
 ============
 
-Install package::
+..
+    Install package::
 
-    pip install madnis
+        pip install madnis
 
 Install from GitHub::
 
