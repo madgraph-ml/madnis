@@ -6,7 +6,7 @@
 
 <p align="center">
 <img alt="Build Status" src="https://github.com/madgraph-ml/madnis/actions/workflows/CI.yml/badge.svg">
-<a href="https://arxiv.org/abs/2212.06172"><img alt="Arxiv" src="https://img.shields.io/badge/arXiv-2212.06172-b31b1b.svg"></a>
+<a href="https://arxiv.org/abs/2311.01548"><img alt="Arxiv" src="https://img.shields.io/badge/arXiv-2311.01548-b31b1b.svg"></a>
 <a href="https://github.com/psf/black"><img alt="Code style: black" src="https://img.shields.io/badge/code%20style-black-000000.svg"></a>
 <a href="https://pytorch.org"><img alt="pytorch" src="https://img.shields.io/badge/PyTorch-2.0-DC583A.svg?style=flat&logo=pytorch"></a>
 </p>
