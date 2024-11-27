@@ -11,7 +11,7 @@ Changing the integration domain
 The default integration domain in MadNIS is the unit hypercube :math:`[0,1]^d`. To choose different
 finite intervals for the integration domain, a custom
 :py:class:`Integrand <madnis.integrator.Integrand>` object can be created. For instance, to
-integrate the function from the previous tutorial over the interval :math:`[0,2]^4`, we can
+integrate the function from the first tutorial over the interval :math:`[0,2]^4`, we can
 construct the integrator as follows:
 
 .. code-block:: python
@@ -122,6 +122,8 @@ an optional dependency of MadNIS. The pre-training can be performed with the fol
 
 .. code-block:: python
 
+    from madnis.integrator import VegasPreTraining
+
     # Construct integrator here
 
     vegas = VegasPreTraining(integrator, bins=64, damping=0.8)
@@ -174,6 +176,6 @@ training samples.
 .. code-block:: python
 
     # save integrator
-    torch.save("integrator.pth", integrator.state_dict())
+    torch.save(integrator.state_dict(), "integrator.pth")
     # load integrator
     integrator.load_state_dict(torch.load("integrator.pth"))

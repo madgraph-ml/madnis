@@ -102,8 +102,11 @@ class VegasPreTraining:
             else:
                 channels = None
             func_vals, y, alphas = self.integrand(x_torch, channels)
-            alpha = torch.gather(alphas, index=channels[:, None], dim=1)[:, 0]
-            f = jac * func_vals.numpy() * alpha.numpy()
+            if self.integrator.multichannel:
+                alpha = torch.gather(alphas, index=channels[:, None], dim=1)[:, 0]
+                f = jac * func_vals.numpy() * alpha.numpy()
+            else:
+                f = jac * func_vals.numpy()
             if self.integrator.drop_zero_integrands:
                 mask_np = f != 0.0
                 f = f[mask_np]
@@ -114,21 +117,22 @@ class VegasPreTraining:
                     zero_counts = torch.bincount(
                         channels[~mask_torch], minlength=self.integrand.channel_count
                     )
+                    channels = channels[mask_torch]
+                    alphas = alphas[mask_torch]
                 else:
                     zero_counts = torch.full((1,), torch.count_nonzero(~mask_torch))
                 x_torch = x_torch[mask_torch]
                 y = y[mask_torch]
                 func_vals = func_vals[mask_torch]
-                channels = channels[mask_torch]
-                alphas = alphas[mask_torch]
             else:
                 zero_counts = None
             grid.add_training_data(r, f**2)
             grid.adapt(alpha=self.damping)
 
             for chan in grid_channels:
-                mask = channels == chan
-                f_chan = torch.from_numpy(f)[mask]
+                f_chan = torch.from_numpy(f)
+                if self.integrator.multichannel:
+                    f_chan = f_chan[channels == chan]
                 counts_chan = len(f_chan)
                 if zero_counts is not None:
                     counts_chan += zero_counts[chan]

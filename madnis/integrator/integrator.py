@@ -257,7 +257,7 @@ class Integrator(nn.Module):
         if scheduler is None or isinstance(scheduler, LRScheduler):
             self.scheduler = scheduler
         else:
-            self.scheduler = scheduler(optimizer)
+            self.scheduler = scheduler(self.optimizer)
 
         self.flow = flow
         self.cwnet = cwnet

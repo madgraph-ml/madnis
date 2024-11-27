@@ -36,6 +36,9 @@ Multi-channel training can be enabled in MadNIS by constructing the integrand us
 
 .. code-block:: python
 
+    import torch
+    from madnis.integrator import Integrator, Integrand
+
     def integrand_func(x, channel):
         dist = 0.3
         sigma = 0.2
@@ -89,7 +92,9 @@ channels and the learned channel weights.
     plt.hist2d(samples.x[~mask,0], samples.x[~mask,1], bins=30)
     plt.show()
 
-    plt.scatter(samples.x[:,0], samples.x[:,1], c=samples.alphas[:,0], marker=".", vmin=0, vmax=1)
+    plt.scatter(
+        samples.x[:,0], samples.x[:,1], c=samples.alphas[:,0], marker=".", vmin=0, vmax=1
+    )
     plt.xlim(0,1)
     plt.ylim(0,1)
     plt.colorbar()
@@ -179,7 +184,8 @@ set the parameter ``has_channel_weight_prior`` to ``True``. The second input to 
 contains the index of the channels that each sample is in. The function returns the integrand value
 multiplied with the Jacobian from the mapping, the remapped point and the channel weights. After
 the training, we can again take a look at the learned channel mappings and weights using the
-plotting code from above.
+plotting code from above. (Note that this time we have to plot ``samples.y`` instead of
+``samples.x`` to access the remapped points.)
 
 .. figure:: figs/multi-withprior.png
 
@@ -210,9 +216,11 @@ that we can turn one channel into the other with the simple transformation :math
 
 .. code-block:: python
 
+    from madnis.integrator import ChannelGrouping
+
     def integrand_func(x, channel):
         y_0 = torch.sigmoid(torch.logit(x) - 0.5)
-        y = torch.where(channel == 1, 1 - y_0, y_0)
+        y = torch.where(channel[:,None] == 1, 1 - y_0, y_0)
         jac = torch.prod(y*(1-y) / (x * (1-x)), dim=-1)
         dist = 0.3
         sigma = 0.2
