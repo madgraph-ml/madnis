@@ -28,6 +28,13 @@ extensions = [
 templates_path = ["_templates"]
 exclude_patterns = []
 
+try:
+    import madnis
+
+    madnis_path = os.path.dirname(os.path.dirname(madnis.__file__))
+except ImportError:
+    madnis_path = os.path.abspath("..")
+
 
 def linkcode_resolve(domain, info):
     if domain != "py":
@@ -54,7 +61,7 @@ def linkcode_resolve(domain, info):
     except TypeError:
         # e.g. object is a typing.Union
         return None
-    file = os.path.relpath(file, os.path.abspath(".."))
+    file = os.path.relpath(file, madnis_path)
     start, end = lines[1], lines[1] + len(lines[0]) - 1
 
     return f"https://github.com/madgraph-ml/madnis/blob/main/{file}#L{start}-L{end}"
