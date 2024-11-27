@@ -33,7 +33,7 @@ class FlowTest(torchtestcase.TorchTestCase):
 
     def test_transform(self):
         self.eps = 1e-8
-        batch_size = 10
+        batch_size = 100
         input_dim = 5
         flow = Flow(input_dim)
         inputs = torch.rand(batch_size, input_dim)
