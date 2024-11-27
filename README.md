@@ -16,8 +16,20 @@ be used for Monte Carlo LHC event generation in future versions of MadGraph. Thi
 provides the MadNIS code as a stand-alone library that can be applied to arbitrary Monte Carlo
 integration and importance sampling tasks.
 
+This repository contains a refactored version of the code used in our publication *The MadNIS
+reloaded*. It is still under active development and will receive frequent updates and bugfixes.
+
+The documentation of the madnis package can be found under [docs.madnis.ai](https://docs.madnis.ai).
 
 ## Installation
+
+You can either install the latest release using pip
+
+```sh
+pip install madnis
+```
+
+or clone the repository and install the package in dev mode
 
 ```sh
 # clone the repository

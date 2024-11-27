@@ -1,12 +1,11 @@
 Installation
 ============
 
-..
-    Install package::
+You can either install the latest release using pip::
 
-        pip install madnis
+    pip install madnis
 
-Install from GitHub::
+or clone the repository and install the package in dev mode::
 
     # clone the repository
     git clone https://github.com/madgraph-ml/madnis.git
