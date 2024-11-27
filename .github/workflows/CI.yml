@@ -5,10 +5,10 @@ name: CI
 
 on:
   workflow_dispatch: {}
-  
+
   push:
     branches: [ "main" ]
-    
+
   pull_request:
     branches: [ "main" ]
 
@@ -23,22 +23,22 @@ jobs:
 
     steps:
     - uses: actions/checkout@v3
-    
+
     - name: Set up Python ${{ matrix.python-version }}
       uses: actions/setup-python@v3
       with:
         python-version: ${{ matrix.python-version }}
-    
+
     - name: check git log
       run: |
         git --no-pager log -2
-        
+
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
         python -m pip install flake8
         if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-        
+
     - name: Lint with flake8
       run: |
         # stop the build if there are Python syntax errors or undefined names
@@ -62,14 +62,14 @@ jobs:
       uses: actions/setup-python@v3
       with:
         python-version: ${{ matrix.python-version }}
-        
+
     - name: Install package and pytest
       run: |
         git --no-pager log -2
         python -m pip install --upgrade pip
         python -m pip install -e .
         python -m pip install pytest
-        
+
     - name: Test pytest
       run: |
         pytest
