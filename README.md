@@ -11,8 +11,10 @@
 <a href="https://pytorch.org"><img alt="pytorch" src="https://img.shields.io/badge/PyTorch-2.0-DC583A.svg?style=flat&logo=pytorch"></a>
 </p>
 
-This a machine learning framework to perform neural multi-channel importance sampling in MadGraph5.
-It containes modules to construct a machine-learning based Monte Carlo integrator using PyTorch.
+MadNIS is a Python library for neural multi-channel importance sampling based on PyTorch. It will
+be used for Monte Carlo LHC event generation in future versions of MadGraph. This repository
+provides the MadNIS code as a stand-alone library that can be applied to arbitrary Monte Carlo
+integration and importance sampling tasks.
 
 
 ## Installation
