@@ -130,6 +130,7 @@ class Flow(nn.Module, Distribution):
         activation: Callable[[], nn.Module] = nn.ReLU,
         layer_constructor: Callable[[int, int], nn.Module] = nn.Linear,
         channels: int | None = None,
+        channel_remap_function: Callable[[torch.Tensor], torch.Tensor] | None = None,
         mapping: Mapping | list[Mapping] | None = None,
         bins: int = 10,
         spline_bounds: float = 10.0,
@@ -165,6 +166,7 @@ class Flow(nn.Module, Distribution):
                 input and output features. Only relevant if subnet_constructor=None.
             channels: If None, build single-channel flow. If integer, build multi-channel flow
                 with this number of channels.
+            channel_remap_function: TODO
             mapping: Specifies a single mapping function or a list of mapping functions (one per
                 channel) that are applied to the input before it enters the flow (forward
                 direction) or after drawing samples using the flow (inverse direction). The
@@ -183,6 +185,7 @@ class Flow(nn.Module, Distribution):
         self.dims_in = dims_in
         self.dims_c = dims_c
         self.channels = channels
+        self.channel_remap_function = channel_remap_function
         self.bins = bins
         self.uniform_latent = uniform_latent
         self.mapping = mapping
@@ -321,6 +324,8 @@ class Flow(nn.Module, Distribution):
             determinants with shape (n, ) of the transformation
         """
         if isinstance(channel, torch.Tensor):
+            if self.channel_remap_function is not None:
+                channel = self.channel_remap_function(channel)
             channel_perm = torch.argsort(channel)
             x = x[channel_perm]
             c = None if c is None else c[channel_perm]
@@ -328,6 +333,13 @@ class Flow(nn.Module, Distribution):
         else:
             x = x.clone()
             channel_perm = None
+            if self.channel_remap_function is not None:
+                if isinstance(channel, int):
+                    channel = self.channel_remap_function(channel)
+                elif isinstance(channel, list):
+                    raise ValueError(
+                        "channel_remap_function not supported if called with list of channel sizes"
+                    )
 
         if inverse:
             jac = 0.0

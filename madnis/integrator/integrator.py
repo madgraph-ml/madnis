@@ -245,12 +245,14 @@ class Integrator(nn.Module):
                 flow = Flow(
                     dims_in=integrand.input_dim,
                     channels=integrand.unique_channel_count(),
+                    channel_remap_function=self.integrand.remap_channels,
                     **flow_kwargs,
                 )
             elif n_discrete == integrand.input_dim:
                 flow = DiscreteFlow(
                     dims_in=integrand.discrete_dims,
                     channels=integrand.unique_channel_count(),
+                    channel_remap_function=self.integrand.remap_channels,
                     prior_prob_function=integrand.discrete_prior_prob_function,
                     prior_prob_mode=integrand.discrete_prior_prob_mode,
                     mode=integrand.discrete_mode,
@@ -262,8 +264,12 @@ class Integrator(nn.Module):
                     dims_in_discrete=integrand.discrete_dims,
                     discrete_dims_position=integrand.discrete_dims_position,
                     channels=integrand.unique_channel_count(),
-                    continuous_kwargs=flow_kwargs,
+                    continuous_kwargs=dict(
+                        channel_remap_function=self.integrand.remap_channels,
+                        **flow_kwargs,
+                    ),
                     discrete_kwargs=dict(
+                        channel_remap_function=self.integrand.remap_channels,
                         prior_prob_function=integrand.discrete_prior_prob_function,
                         prior_prob_mode=integrand.discrete_prior_prob_mode,
                         mode=integrand.discrete_mode,
@@ -464,10 +470,7 @@ class Integrator(nn.Module):
         # zero-weight events here and it might be sufficient to evaluate the flow for events with
         # func_val != 0. That might however give wrong results for other loss functions
         if self.multichannel:
-            q_test = self.flow.prob(
-                samples.x,
-                channel=self.integrand.remap_channels(samples.channels),
-            )
+            q_test = self.flow.prob(samples.x, channel=samples.channels)
         else:
             q_test = self.flow.prob(samples.x, channel=samples.channels)
         f_true, means, variances, counts = self._compute_integral(samples)
@@ -717,7 +720,6 @@ class Integrator(nn.Module):
             if self.multichannel
             else None
         )
-        channels_remapped = self.integrand.remap_channels(channels)
 
         batches_out = []
         current_batch_size = 0
@@ -725,7 +727,7 @@ class Integrator(nn.Module):
             with torch.no_grad():
                 x, prob = self.flow.sample(
                     n,
-                    channel=channels_remapped,
+                    channel=channels,
                     return_prob=True,
                     device=self.dummy.device,
                     dtype=self.dummy.dtype,

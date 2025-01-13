@@ -137,18 +137,20 @@ class Integrand(nn.Module):
         else:
             return len(self.channel_grouping.groups)
 
-    def remap_channels(self, channels: torch.Tensor) -> torch.Tensor:
+    def remap_channels(self, channels: torch.Tensor | int) -> torch.Tensor | int:
         """
         Remaps channel indices to the indices of their respective channel groups if a
         ``ChannelGrouping`` object was provided, otherwise returns the indices unchanged.
 
         Args:
-            channels: channel indices, shape (n, )
+            channels: channel indices, tensor with shape (n, ) or integer
         Returns:
-            remapped channel indices, shape (n, )
+            remapped channel indices, tensor with shape (n, ) or integer
         """
         if self.channel_grouping is None:
             return channels
+        elif isinstance(channels, int):
+            return self.channel_id_map[channels].item()
         else:
             return self.channel_id_map[channels]
 

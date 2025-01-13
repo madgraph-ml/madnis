@@ -22,6 +22,7 @@ class DiscreteFlow(nn.Module, Distribution):
         prior_prob_function: PriorProbFunction | None = None,
         prior_prob_mode: Literal["indices", "states"] = "indices",
         mode: Literal["indices", "cdf"] = "indices",
+        channel_remap_function: Callable[[torch.Tensor], torch.Tensor] | None = None,
         **mlp_kwargs,  # TODO: replace this with default arguments for MLP
     ):
         """ """
@@ -33,6 +34,7 @@ class DiscreteFlow(nn.Module, Distribution):
         self.dims_in = dims_in
         self.max_dim = max(dims_in)
         self.prior_prob_function = prior_prob_function
+        self.channel_remap_function = channel_remap_function
         if prior_prob_mode == "indices":
             self.prior_uses_indices = True
         elif prior_prob_mode == "states":
@@ -62,6 +64,7 @@ class DiscreteFlow(nn.Module, Distribution):
         channel: torch.Tensor | list[int] | int | None,
         device: torch.device,
     ):
+        # TODO: do sth with remapped channel here
         if channel is None:
             return torch.zeros(n, dtype=torch.int64, device=device)
         if isinstance(channel, int):
@@ -69,6 +72,10 @@ class DiscreteFlow(nn.Module, Distribution):
         if isinstance(channel, torch.Tensor):
             return channel
 
+        if channel_remap_function is not None:
+            raise ValueError(
+                "channel_remap_function not supported if called with list of channel sizes"
+            )
         state = torch.zeros((sum(channel),), dtype=torch.int64, device=device)
         start_index = 0
         for chan_id, chan_size in enumerate(channel):
@@ -114,7 +121,7 @@ class DiscreteFlow(nn.Module, Distribution):
                     if self.cdf_mode:
                         cdf = probs.cumsum(dim=1)
                         x_indices[:, i : i + 1] = torch.searchsorted(
-                            cdf / cdf[:, -1:], x[:, i : i + 1]
+                            cdf / cdf[:, -1:], x[:, i : i + 1].clone()
                         )
                     if i != len(self.dims_in) - 1:
                         state = torch.gather(
@@ -128,7 +135,7 @@ class DiscreteFlow(nn.Module, Distribution):
             .flatten(start_dim=1)[:, self.one_hot_mask]
         )
 
-        net_input = x_one_hot if c is None else torch.cat((c, net_input), dim=1)
+        net_input = x_one_hot if c is None else torch.cat((c, x_one_hot), dim=1)
         net_prob = self.masked_net(net_input[:, : -self.dims_in[-1]]).exp()
         unnorm_prob = (
             net_prob if self.prior_prob_function is None else net_prob * prior_probs
@@ -266,9 +273,12 @@ class DiscreteFlow(nn.Module, Distribution):
     def init_with_grid(self, grid: torch.Tensor):
         probs = []
         for i, dim in enumerate(self.dims_in):
-            grid_i = grid[..., i, :]
-            x = torch.linspace(0, 1, dim + 1)[(None,) * (len(grid_i.shape) - 1)].expand(
-                *grid_i.shape[:-1], -1
+            # grid_i and x are clone because searchsorted would complain otherwise
+            grid_i = grid[..., i, :].clone()
+            x = (
+                torch.linspace(0, 1, dim + 1)[(None,) * (len(grid_i.shape) - 1)]
+                .expand(*grid_i.shape[:-1], -1)
+                .clone()
             )
             cdf_vals = torch.searchsorted(grid_i, x)
             probs.append(cdf_vals.diff(dim=-1))
