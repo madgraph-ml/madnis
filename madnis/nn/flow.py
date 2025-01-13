@@ -105,7 +105,7 @@ class Distribution(ABC):
         Returns:
             probabilities with shape (n, )
         """
-        return self.log_prob(x, channel, c)
+        return self.log_prob(x, c, channel).exp()
 
 
 class Flow(nn.Module, Distribution):

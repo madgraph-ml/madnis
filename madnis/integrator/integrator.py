@@ -12,7 +12,7 @@ import torch.nn.functional as F
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import LRScheduler
 
-from ..nn import MLP, Distribution, Flow
+from ..nn import MLP, DiscreteFlow, Distribution, Flow, MixedFlow
 from .buffer import Buffer
 from .integrand import Integrand
 from .losses import MultiChannelLoss, kl_divergence, stratified_variance
@@ -150,6 +150,7 @@ class Integrator(nn.Module):
         dims: int = 0,
         flow: Distribution | None = None,
         flow_kwargs: dict[str, Any] = {},
+        discrete_flow_kwargs: dict[str, Any] = {},
         train_channel_weights: bool = True,
         cwnet: nn.Module | None = None,
         cwnet_kwargs: dict[str, Any] = {},
@@ -178,20 +179,22 @@ class Integrator(nn.Module):
         Args:
             integrand: the function to be integrated. In the case of a simple single-channel
                 integration, the integrand function can directly be passed to the integrator.
-                In more complicated cases, like multi-channel integrals, use the `Integrand` class.
+                In more complicated cases, like multi-channel integrals, use the ``Integrand`` class.
             dims: dimension of the integration space. Only required if a simple function is given
                 as integrand.
             flow: sampling distribution used for the integration. If None, a flow is constructed
-                using the `Flow` class. Otherwise, it has to be compatible with a normalizing flow,
-                i.e. have the interface defined in the `Distribution` class.
+                using the ``Flow`` class. Otherwise, it has to be compatible with a normalizing flow,
+                i.e. have the interface defined in the ``Distribution`` class.
             flow_kwargs: If flow is None, these keyword arguments are passed to the `Flow`
                 constructor.
+            discrete_flow_kwargs: If flow is None, these keyword arguments are passed to the
+                ``MixedFlow`` or ``DiscreteFlow`` constructor.
             train_channel_weights: If True, construct a channel weight network and train it. Only
                 necessary if cwnet is None.
             cwnet: network used for the trainable channel weights. If None and
-                train_channel_weights is True, the cwnet is built using the `MLP` class.
+                train_channel_weights is True, the cwnet is built using the ``MLP`` class.
             cwnet_kwargs: If cwnet is None and train_channel_weights is True, these keyword
-                arguments are passed to the `MLP` constructor.
+                arguments are passed to the ``MLP`` constructor.
             loss: Loss function used for training. If not provided, the KL divergence is chosen in
                 the single-channel case and the stratified variance is chosen in the multi-channel
                 case.
@@ -237,11 +240,37 @@ class Integrator(nn.Module):
         self.multichannel = integrand.channel_count is not None
 
         if flow is None:
-            flow = Flow(
-                dims_in=integrand.input_dim,
-                channels=integrand.unique_channel_count(),
-                **flow_kwargs,
-            )
+            n_discrete = len(integrand.discrete_dims)
+            if n_discrete == 0:
+                flow = Flow(
+                    dims_in=integrand.input_dim,
+                    channels=integrand.unique_channel_count(),
+                    **flow_kwargs,
+                )
+            elif n_discrete == integrand.input_dim:
+                flow = DiscreteFlow(
+                    dims_in=integrand.discrete_dims,
+                    channels=integrand.unique_channel_count(),
+                    prior_prob_function=integrand.discrete_prior_prob_function,
+                    prior_prob_mode=integrand.discrete_prior_prob_mode,
+                    mode=integrand.discrete_mode,
+                    **discrete_flow_kwargs,
+                )
+            else:
+                flow = MixedFlow(
+                    dims_in_continuous=integrand.input_dim - n_discrete,
+                    dims_in_discrete=integrand.discrete_dims,
+                    discrete_dims_position=integrand.discrete_dims_position,
+                    channels=integrand.unique_channel_count(),
+                    continuous_kwargs=flow_kwargs,
+                    discrete_kwargs=dict(
+                        prior_prob_function=integrand.discrete_prior_prob_function,
+                        prior_prob_mode=integrand.discrete_prior_prob_mode,
+                        mode=integrand.discrete_mode,
+                        **discrete_flow_kwargs,
+                    ),
+                )
+
         if cwnet is None and train_channel_weights and self.multichannel:
             cwnet = MLP(integrand.remapped_dim, integrand.channel_count, **cwnet_kwargs)
         if cwnet is None:

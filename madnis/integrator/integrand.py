@@ -1,8 +1,9 @@
-from typing import Callable
+from typing import Callable, Literal
 
 import torch
 import torch.nn as nn
 
+from ..nn import PriorProbFunction
 from .channel_grouping import ChannelGrouping
 
 
@@ -21,6 +22,11 @@ class Integrand(nn.Module):
         remapped_dim: int | None = None,
         has_channel_weight_prior: bool = False,
         channel_grouping: ChannelGrouping | None = None,
+        discrete_dims: list[int] = [],
+        discrete_dims_position: Literal["first", "last"] = "first",
+        discrete_prior_prob_function: PriorProbFunction | None = None,
+        discrete_prior_prob_mode: Literal["indices", "states"] = "indices",
+        discrete_mode: Literal["indices", "cdf"] = "indices",
     ):
         """
         Args:
@@ -57,12 +63,19 @@ class Integrand(nn.Module):
             has_channel_weight_prior: If True, the integrand returns channel weights
             channel_grouping: ChannelGrouping object or None if all channels are independent
         """
+        # TODO: update documentation
         super().__init__()
         self.input_dim = input_dim
         self.remapped_dim = input_dim if remapped_dim is None else remapped_dim
         self.channel_count = channel_count
         self.has_channel_weight_prior = has_channel_weight_prior
         self.channel_grouping = channel_grouping
+
+        self.discrete_dims = discrete_dims
+        self.discrete_dims_position = discrete_dims_position
+        self.discrete_prior_prob_function = discrete_prior_prob_function
+        self.discrete_prior_prob_mode = discrete_prior_prob_mode
+        self.discrete_mode = discrete_mode
 
         if channel_count is None:
             self.function = lambda x, channels: (function(x), None, None)

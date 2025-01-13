@@ -1,4 +1,4 @@
-from typing import Callable
+from typing import Any, Callable, Literal
 
 import torch
 import torch.nn as nn
@@ -9,7 +9,7 @@ from .masked_mlp import MaskedMLP
 
 PriorProbFunction = (
     Callable[[torch.Tensor, int], torch.Tensor]
-    | Callable[[torch.Tensor, int], tuple[torch.Tensor, torch.Tensor]]
+    | Callable[[torch.Tensor, int], tuple[torch.Tensor, torch.Tensor | None]]
 )
 
 
@@ -18,21 +18,20 @@ class DiscreteFlow(nn.Module, Distribution):
         self,
         dims_in: list[int],
         dims_c: int = 0,
-        mlp_kwargs: dict = {},
+        channels: int | None = None,
         prior_prob_function: PriorProbFunction | None = None,
         prior_prob_mode: Literal["indices", "states"] = "indices",
-        output_mode: Literal["int", "float"] = "int",
+        mode: Literal["indices", "cdf"] = "indices",
+        **mlp_kwargs,  # TODO: replace this with default arguments for MLP
     ):
         """ """
         super().__init__()
 
         self.masked_net = MaskedMLP(
-            input_dims=[dims_c, *discrete_dims[:-1]],
-            output_dims=dims_in_discrete,
-            **discrete_kwargs,
+            input_dims=[dims_c, *dims_in[:-1]], output_dims=dims_in, **mlp_kwargs
         )
-        self.discrete_dims = discrete_dims
-        self.max_dim = max(discrete_dims)
+        self.dims_in = dims_in
+        self.max_dim = max(dims_in)
         self.prior_prob_function = prior_prob_function
         if prior_prob_mode == "indices":
             self.prior_uses_indices = True
@@ -40,70 +39,138 @@ class DiscreteFlow(nn.Module, Distribution):
             self.prior_uses_indices = False
         else:
             raise ValueError(f"Unknown prior probability mode '{prior_prob_mode}'")
-        if output_mode == "int":
-            self.register_buffer("output_scale", torch.tensor(discrete_dims))
-        elif prior_prob_mode == "float":
-            self.output_scale = None
+        if mode == "indices":
+            self.cdf_mode = False
+        elif mode == "cdf":
+            self.cdf_mode = True
         else:
-            raise ValueError(f"Unknown output mode '{prior_prob_mode}'")
+            raise ValueError(f"Unknown mode '{mode}'")
 
         discrete_indices = []
         one_hot_mask = []
-        for i, dim in enumerate(discrete_dims):
+        for i, dim in enumerate(dims_in):
             discrete_indices.extend([i] * dim)
             one_hot_mask.extend([True] * dim + [False] * (self.max_dim - dim))
         self.register_buffer("discrete_indices", torch.tensor(discrete_indices))
         self.register_buffer("one_hot_mask", torch.tensor(one_hot_mask))
+        self.register_buffer("dims_in_tensor", torch.tensor(dims_in))
+        self.register_buffer("dummy", torch.tensor([0.0]))
 
-    def one_hot(self, x: torch.Tensor) -> torch.Tensor:
-        if self.output_scale is not None:
-            x = (x * self.output_scale).long()
-        return (
-            F.one_hot(x, self.max_dim)
-            .to(x.dtype)
-            .flatten(start_dim=1)[:, self.one_hot_mask]
-        )
+    def _init_state(
+        self,
+        n: int,
+        channel: torch.Tensor | list[int] | int | None,
+        device: torch.device,
+    ):
+        if channel is None:
+            return torch.zeros(n, dtype=torch.int64, device=device)
+        if isinstance(channel, int):
+            return torch.full(n, channel, device=device)
+        if isinstance(channel, torch.Tensor):
+            return channel
+
+        state = torch.zeros((sum(channel),), dtype=torch.int64, device=device)
+        start_index = 0
+        for chan_id, chan_size in enumerate(channel):
+            end_index = start_index + chan_size
+            state[start_index:end_index] = chan_id
+        return state
 
     def log_prob(
         self,
         x: torch.Tensor,
         c: torch.Tensor | None = None,
         channel: torch.Tensor | list[int] | int | None = None,
-    ) -> torch.Tensor:
+        return_net_input: bool = False,
+    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
         """ """
-        x_one_hot = self.one_hot(x)
-        if c is None:
-            input_disc = one_hot
+        if self.prior_prob_function is None:
+            if self.cdf_mode:
+                x_indices = (x * self.dims_in_tensor).long()
+            else:
+                x_indices = x
         else:
-            input_disc = torch.cat((c, one_hot), dim=1)
+            if self.cdf_mode:
+                x_indices = torch.ones(
+                    (x.shape[0], len(self.dims_in)), device=x.device, dtype=torch.int64
+                )
+            else:
+                x_indices = x
+            prior_probs = []
+            if self.prior_uses_indices:
+                for i, _ in enumerate(self.dims_in):
+                    probs = self.prior_prob_function(x_indices[:, :i], i)
+                    prior_probs.append(probs)
+                    if self.cdf_mode:
+                        cdf = probs.cumsum(dim=1)
+                        x_indices[:, i : i + 1] = torch.searchsorted(
+                            cdf / cdf[:, -1:], x[:, i : i + 1]
+                        )
+            else:
+                state = self._init_state(x.shape[0], channel, device=x.device)
+                for i, _ in enumerate(self.dims_in):
+                    probs, new_states = self.prior_prob_function(state, i)
+                    prior_probs.append(probs)
+                    if self.cdf_mode:
+                        cdf = probs.cumsum(dim=1)
+                        x_indices[:, i : i + 1] = torch.searchsorted(
+                            cdf / cdf[:, -1:], x[:, i : i + 1]
+                        )
+                    if i != len(self.dims_in) - 1:
+                        state = torch.gather(
+                            new_states, dim=1, index=x_indices[:, i : i + 1]
+                        )[:, 0]
+            prior_probs = torch.cat(prior_probs, dim=1)
 
-        prior_probs = []
-        if self.prior_uses_indices:
-            for i, _ in enumerate(self.discrete_dims):
-                prior_probs.append(self.prior_prob_func(x[:, :i], i))
-        else:
-            # TODO: pass channel number here
-            state = torch.zeros((len(x),), dtype=torch.int64, device=x.device)
-            for i, _ in enumerate(self.discrete_dims):
-                probs, new_states = self.prior_prob_func(state, i)
-                prior_probs.append(probs)
-                state = torch.gather(new_states, dim=1, index=x[:, i : i + 1])[:, 0]
-
-        prior_probs = torch.cat(prior_probs, dim=1)
-
-        unnorm_prob_disc = (
-            self.masked_net(input_disc[:, : -self.discrete_dims[-1]]).exp()
-            * discrete_probs
+        x_one_hot = (
+            F.one_hot(x_indices, self.max_dim)
+            .to(self.dummy.dtype)
+            .flatten(start_dim=1)[:, self.one_hot_mask]
         )
-        prob_norms = torch.zeros_like(indices, dtype=x.dtype).scatter_add_(
-            1, self.discrete_indices[None, :].expand(x.shape[0], -1), unnorm_prob_disc
+
+        net_input = x_one_hot if c is None else torch.cat((c, net_input), dim=1)
+        net_prob = self.masked_net(net_input[:, : -self.dims_in[-1]]).exp()
+        unnorm_prob = (
+            net_prob if self.prior_prob_function is None else net_prob * prior_probs
+        )
+
+        prob_norms = torch.zeros_like(x, dtype=x_one_hot.dtype).scatter_add_(
+            dim=1,
+            index=self.discrete_indices[None, :].expand(x.shape[0], -1),
+            src=unnorm_prob,
         )
         prob_sums = torch.zeros_like(prob_norms).scatter_add_(
-            1,
-            self.discrete_indices[None, :].expand(x.shape[0], -1),
-            unnorm_prob_disc * x_discrete,
+            dim=1,
+            index=self.discrete_indices[None, :].expand(x.shape[0], -1),
+            src=unnorm_prob * x_one_hot,
         )
-        return torch.prod(prob_sums / prob_norms, dim=1).log()
+        if self.cdf_mode:
+            if self.prior_prob_function is None:
+                prob = torch.prod(prob_sums / prob_norms * self.dims_in_tensor, dim=1)
+            else:
+                prior_prob_norms = torch.zeros_like(
+                    x, dtype=x_one_hot.dtype
+                ).scatter_add_(
+                    dim=1,
+                    index=self.discrete_indices[None, :].expand(x.shape[0], -1),
+                    src=prior_probs,
+                )
+                prior_prob_sums = torch.zeros_like(prob_norms).scatter_add_(
+                    dim=1,
+                    index=self.discrete_indices[None, :].expand(x.shape[0], -1),
+                    src=prior_probs * x_one_hot,
+                )
+                prob = torch.prod(
+                    (prob_sums / prob_norms) / (prior_prob_sums / prior_prob_norms),
+                    dim=1,
+                )
+        else:
+            prob = torch.prod(prob_sums / prob_norms, dim=1)
+
+        if return_net_input:
+            return prob.log(), net_input
+        else:
+            return prob.log()
 
     def sample(
         self,
@@ -114,6 +181,7 @@ class DiscreteFlow(nn.Module, Distribution):
         return_prob: bool = False,
         device: torch.device | None = None,
         dtype: torch.dtype | None = None,
+        return_net_input: bool = False,
     ) -> torch.Tensor | tuple[torch.Tensor, ...]:
         """ """
         if n is None:
@@ -125,46 +193,93 @@ class DiscreteFlow(nn.Module, Distribution):
             options = {"device": c.device, "dtype": c.dtype}
             x_in = c
 
-        log_prob = torch.ones((n,), **options)
+        prob = torch.ones((n,), **options)
         net_cache = None
-        if self.prior_uses_indices:
-            # TODO: pass channel number here
-            state = torch.zeros((n,), device=options["device"], dtype=torch.int64)
+        if not self.prior_uses_indices:
+            state = self._init_state(n, channel, device=options["device"])
 
         x_out = torch.ones(
-            (n, len(self.discrete_dims)), device=options["device"], dtype=torch.int64
+            (n, len(self.dims_in)),
+            device=options["device"],
+            dtype=prob.dtype if self.cdf_mode else torch.int64,
         )
-        for i, dim in enumerate(self.discrete_dims):
-            y, net_cache = self.masked_net.forward_cached(x, i, net_cache)
-            if self.prior_uses_indices:
-                prior_probs = self.prior_prob_func(x[:, :i], i)
+        for i, dim in enumerate(self.dims_in):
+            y, net_cache = self.masked_net.forward_cached(x_in, i, net_cache)
+            net_probs = y.exp()
+            if self.prior_prob_function is None:
+                unnorm_probs = net_probs
             else:
-                prior_probs, state = self.prior_prob_func(state, i)
-            unnorm_probs = y.exp() * pred_probs
+                if self.prior_uses_indices:
+                    prior_probs = self.prior_prob_function(x_out[:, :i], i)
+                else:
+                    prior_probs, new_states = self.prior_prob_function(state, i)
+                unnorm_probs = net_probs * prior_probs
             cdf = unnorm_probs.cumsum(dim=1)
             norm = cdf[:, -1]
             cdf = cdf / norm[:, None]
             r = torch.rand((y.shape[0], 1), **options)
             samples = torch.searchsorted(cdf, r)[:, 0]
-            x_out[:, i] = samples
-            prob = torch.gather(unnorm_probs, 1, samples[:, None])[:, 0] / norm * prob
-            x = F.one_hot(samples, dim).to(y.dtype)
+            if self.cdf_mode:
+                if self.prior_prob_function is None:
+                    prob = (
+                        prob
+                        * torch.gather(unnorm_probs, 1, samples[:, None])[:, 0]
+                        / norm
+                        * dim
+                    )
+                    x_out[:, i] = (samples + 0.5) / dim
+                else:
+                    cdf_prior = prior_probs.cumsum(dim=1)
+                    norm_prior = cdf_prior[:, -1]
+                    cdf_prior = cdf_prior / norm_prior[:, None]
+                    prob_y = (
+                        torch.gather(unnorm_probs, 1, samples[:, None])[:, 0] / norm
+                    )
+                    prob_x = (
+                        torch.gather(prior_probs, 1, samples[:, None])[:, 0]
+                        / norm_prior
+                    )
+                    cdf_x = torch.gather(cdf_prior, 1, samples[:, None])[:, 0]
+                    prob = prob * prob_y / prob_x
+                    x_out[:, i] = cdf_x - prob_x / 2
+            else:
+                x_out[:, i] = samples
+                prob = (
+                    prob * torch.gather(unnorm_probs, 1, samples[:, None])[:, 0] / norm
+                )
+            if not self.prior_uses_indices and i != len(self.dims_in) - 1:
+                state = torch.gather(new_states, dim=1, index=samples[:, None])[:, 0]
+            x_in = F.one_hot(samples, dim).to(y.dtype)
 
-        if self.output_scale is not None:
-            x_out = (x_out + 0.5) / self.output_scale
         extra_returns = []
         if return_log_prob:
-            extra_returns.append(log_prob)
+            extra_returns.append(prob.log())
         if return_prob:
-            extra_returns.append(log_prob.exp())
+            extra_returns.append(prob)
+        if return_net_input:
+            extra_returns.append(torch.cat((net_cache[0], x_in), dim=1))
         if len(extra_returns) > 0:
             return x_out, *extra_returns
         else:
             return x_out
 
     def init_with_grid(self, grid: torch.Tensor):
-        # TODO: implement VEGAS init
-        pass
+        probs = []
+        for i, dim in enumerate(self.dims_in):
+            grid_i = grid[..., i, :]
+            x = torch.linspace(0, 1, dim + 1)[(None,) * (len(grid_i.shape) - 1)].expand(
+                *grid_i.shape[:-1], -1
+            )
+            cdf_vals = torch.searchsorted(grid_i, x)
+            probs.append(cdf_vals.diff(dim=-1))
+        log_probs = torch.cat(probs, dim=-1).log()
+
+        weights = self.masked_net.weights[-1]
+        biases = self.masked_net.biases[-1]
+        # TODO: multichannel case
+        nn.init.zeros_(weights)
+        with torch.no_grad():
+            biases.copy_(log_probs[0, :])
 
 
 class MixedFlow(nn.Module, Distribution):
@@ -173,26 +288,38 @@ class MixedFlow(nn.Module, Distribution):
         dims_in_continuous: int,
         dims_in_discrete: list[int],
         dims_c: int = 0,
-        discrete_dims_first: bool = True,
-        continuous_kwargs: dict = {},
-        discrete_kwargs: dict = {},
+        discrete_dims_position: Literal["first", "last"] = "first",
+        channels: int | None = None,
+        continuous_kwargs: dict[str, Any] = {},
+        discrete_kwargs: dict[str, Any] = {},
     ):
         """ """
         super().__init__()
-        self.discrete_dims_first = discrete_dims_first
+        if discrete_dims_position == "first":
+            self.discrete_dims_first = True
+        elif discrete_dims_position == "last":
+            self.discrete_dims_first = False
+        else:
+            raise ValueError("discrete_dims_position must be 'first' or 'last'")
         self.dims_in_continuous = dims_in_discrete
         self.dims_in_discrete = len(dims_in_discrete)
-        if discrete_dims_first:
+        if self.discrete_dims_first:
             dims_c_discrete = dims_c
             dims_c_continuous = sum(dims_in_discrete) + dims_c
         else:
             dims_c_discrete = dims_c + dims_in_continuous
             dims_c_continuous = dims_c
         self.discrete_flow = DiscreteFlow(
-            dims_in=dims_in_discrete, dims_c=dims_c_discrete, **discrete_kwargs
+            dims_in=dims_in_discrete,
+            dims_c=dims_c_discrete,
+            channels=channels,
+            **discrete_kwargs,
         )
         self.continuous_flow = Flow(
-            dims_in=dims_in_continuous, dims_c=dims_c_continuous, **continuous_kwargs
+            dims_in=dims_in_continuous,
+            dims_c=dims_c_continuous,
+            channels=channels,
+            **continuous_kwargs,
         )
 
     def log_prob(
@@ -220,14 +347,8 @@ class MixedFlow(nn.Module, Distribution):
         """
         if self.discrete_dims_first:
             x_discrete = x[:, : self.dims_in_discrete]
-            log_prob_discrete = self.discrete_flow.log_prob(
-                x_discrete, c=input_disc, channel=channel
-            )
-            x_discrete_one_hot = self.discrete_flow.one_hot(x_discrete)
-            condition = (
-                x_discrete_one_hot
-                if c is None
-                else torch.cat((c, x_discrete_one_hot), dim=1)
+            log_prob_discrete, condition = self.discrete_flow.log_prob(
+                x_discrete, c=c, channel=channel, return_net_input=True
             )
             log_prob_continuous = self.continuous_flow.log_prob(
                 x[:, self.dims_in_discrete :], c=condition, channel=channel
@@ -257,21 +378,16 @@ class MixedFlow(nn.Module, Distribution):
     ) -> torch.Tensor | tuple[torch.Tensor, ...]:
         """ """
         if self.discrete_dims_first:
-            x_discrete, log_prob_discrete = self.flow_discrete.sample(
+            x_discrete, prob_discrete, condition = self.discrete_flow.sample(
                 n=n,
                 c=c,
                 channel=channel,
-                return_log_prob=True,
+                return_prob=True,
                 device=device,
                 dtype=dtype,
+                return_net_input=True,
             )
-            x_discrete_one_hot = self.discrete_flow.one_hot(x_discrete)
-            condition = (
-                x_discrete_one_hot
-                if c is None
-                else torch.cat((c, x_discrete_one_hot), dim=1)
-            )
-            x_continuous, log_prob_continuous = self.continuous_flow.log_prob(
+            x_continuous, log_prob_continuous = self.continuous_flow.sample(
                 c=condition,
                 channel=channel,
                 return_log_prob=True,
@@ -280,7 +396,7 @@ class MixedFlow(nn.Module, Distribution):
             )
             x = torch.cat((x_discrete, x_continuous), dim=1)
         else:
-            x_continuous, log_prob_continuous = self.continuous_flow.log_prob(
+            x_continuous, log_prob_continuous = self.continuous_flow.sample(
                 n=n,
                 c=c,
                 channel=channel,
@@ -291,21 +407,20 @@ class MixedFlow(nn.Module, Distribution):
             condition = (
                 x_continuous if c is None else torch.cat((c, x_continuous), dim=1)
             )
-            x_discrete, log_prob_discrete = self.flow_discrete.sample(
+            x_discrete, prob_discrete = self.discrete_flow.sample(
                 c=condition,
                 channel=channel,
-                return_log_prob=True,
+                return_prob=True,
                 device=device,
                 dtype=dtype,
             )
             x = torch.cat((x_continuous, x_discrete), dim=1)
 
-        log_prob = log_prob_discrete + log_prob_continuous
         extra_returns = []
         if return_log_prob:
-            extra_returns.append(log_prob)
+            extra_returns.append(prob_discrete.log() + log_prob_continuous)
         if return_prob:
-            extra_returns.append(log_prob.exp())
+            extra_returns.append(prob_discrete * log_prob_continuous.exp())
         if len(extra_returns) > 0:
             return x, *extra_returns
         else:
