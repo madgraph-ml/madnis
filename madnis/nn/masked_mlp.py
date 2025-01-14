@@ -129,7 +129,8 @@ class MaskedMLP(nn.Module):
     ) -> tuple[torch.Tensor, list[list[torch.Tensor] | None]]:
         caches = itertools.repeat(None) if caches is None else caches
         if self.channels == 1:
-            return self._forward_cached_single(x, feature, next(iter(caches)), 0)
+            x, cache = self._forward_cached_single(x, feature, next(iter(caches)), 0)
+            return x, [cache]
         elif isinstance(channel, list):
             xs, caches = zip(
                 *[
@@ -141,7 +142,10 @@ class MaskedMLP(nn.Module):
             )
             return torch.cat(xs, dim=0), caches
         elif isinstance(channel, int):
-            return self._forward_cached_single(x, feature, next(iter(caches)), channel)
+            x, cache = self._forward_cached_single(
+                x, feature, next(iter(caches)), channel
+            )
+            return x, [cache]
         else:
             # TODO: implement optimized version for the uniform special case
             xs, caches = zip(
