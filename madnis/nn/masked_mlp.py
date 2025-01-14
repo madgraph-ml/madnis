@@ -1,3 +1,4 @@
+import itertools
 import math
 
 import torch
@@ -13,6 +14,7 @@ class MaskedMLP(nn.Module):
         layers: int = 3,
         nodes_per_feature: int = 8,
         activation=nn.LeakyReLU,
+        channels: int | None = None,
     ):
         super().__init__()
 
@@ -55,48 +57,125 @@ class MaskedMLP(nn.Module):
         self.in_slices.pop(0)
         self.out_slices.pop(0)
 
+        self.channels = 1 if channels is None else channels
         self.masks = nn.ParameterList()
-        self.weights = nn.ParameterList()
-        self.biases = nn.ParameterList()
-        for deg_in, deg_out in zip(layer_degrees[:-1], layer_degrees[1:]):
-            self.masks.append(
-                nn.Parameter(
-                    (deg_out[:, None] >= deg_in[None, :]).float(), requires_grad=False
+        self.weights = nn.ModuleList()
+        self.biases = nn.ModuleList()
+
+        for i in range(self.channels):
+            chan_weights = nn.ParameterList()
+            chan_biases = nn.ParameterList()
+            for deg_in, deg_out in zip(layer_degrees[:-1], layer_degrees[1:]):
+                if i == 0:
+                    self.masks.append(
+                        nn.Parameter(
+                            (deg_out[:, None] >= deg_in[None, :]).float(),
+                            requires_grad=False,
+                        )
+                    )
+                chan_weights.append(
+                    nn.Parameter(torch.empty((len(deg_out), len(deg_in))))
                 )
-            )
-            self.weights.append(nn.Parameter(torch.empty((len(deg_out), len(deg_in)))))
-            self.biases.append(nn.Parameter(torch.empty((len(deg_out),))))
+                chan_biases.append(nn.Parameter(torch.empty((len(deg_out),))))
+            self.weights.append(chan_weights)
+            self.biases.append(chan_biases)
 
         self.activation = activation()
         self.reset_parameters()
 
     def reset_parameters(self):
-        for weight, bias in zip(self.weights[:-1], self.biases[:-1]):
-            torch.nn.init.kaiming_uniform_(weight, a=math.sqrt(5))
-            fan_in, _ = torch.nn.init._calculate_fan_in_and_fan_out(weight)
-            bound = 1 / math.sqrt(fan_in) if fan_in > 0 else 0
-            torch.nn.init.uniform_(bias, -bound, bound)
-        nn.init.zeros_(self.weights[-1])
-        nn.init.zeros_(self.biases[-1])
+        for chan_weights, chan_biases in zip(self.weights, self.biases):
+            for weight, bias in zip(chan_weights[:-1], chan_biases[:-1]):
+                torch.nn.init.kaiming_uniform_(weight, a=math.sqrt(5))
+                fan_in, _ = torch.nn.init._calculate_fan_in_and_fan_out(weight)
+                bound = 1 / math.sqrt(fan_in) if fan_in > 0 else 0
+                torch.nn.init.uniform_(bias, -bound, bound)
+            nn.init.zeros_(chan_weights[-1])
+            nn.init.zeros_(chan_biases[-1])
 
-    def forward(self, x: torch.Tensor):
-        for weight, bias, mask in zip(
-            self.weights[:-1], self.biases[:-1], self.masks[:-1]
-        ):
-            x = self.activation(F.linear(x, mask * weight, bias))
-        return F.linear(x, self.masks[-1] * self.weights[-1], self.biases[-1])
+    def forward(
+        self,
+        x: torch.Tensor,
+        channel: list[int] | int | None = None,
+    ) -> torch.Tensor:
+        if self.channels == 1:
+            return self._forward_single(x, 0)
+        elif isinstance(channel, list):
+            return torch.cat(
+                [
+                    self._forward_single(xi, i)
+                    for i, xi in enumerate(x.split(channel, dim=0))
+                ],
+                dim=0,
+            )
+        elif isinstance(channel, int):
+            return self._forward_single(x, channel)
+        else:
+            # TODO: implement optimized version for the uniform special case
+            return torch.cat(
+                [
+                    self._forward_single(xi, i)
+                    for i, xi in enumerate(x.split(self.channels, dim=0))
+                ],
+                dim=0,
+            )
 
     def forward_cached(
-        self, x: torch.Tensor, feature: int, cache: list[torch.Tensor] | None = None
-    ):
+        self,
+        x: torch.Tensor,
+        feature: int,
+        caches: list[list[torch.Tensor] | None] | None = None,
+        channel: list[int] | int | None = None,
+    ) -> tuple[torch.Tensor, list[list[torch.Tensor] | None]]:
+        caches = itertools.repeat(None) if caches is None else caches
+        if self.channels == 1:
+            return self._forward_cached_single(x, feature, next(iter(caches)), 0)
+        elif isinstance(channel, list):
+            xs, caches = zip(
+                *[
+                    self._forward_cached_single(xi, feature, cache, i)
+                    for i, (xi, cache) in enumerate(
+                        zip(x.split(channel, dim=0), caches)
+                    )
+                ]
+            )
+            return torch.cat(xs, dim=0), caches
+        elif isinstance(channel, int):
+            return self._forward_cached_single(x, feature, next(iter(caches)), channel)
+        else:
+            # TODO: implement optimized version for the uniform special case
+            xs, caches = zip(
+                *[
+                    self._forward_cached_single(xi, feature, cache, i)
+                    for i, (xi, cache) in enumerate(
+                        zip(x.split(self.channels, dim=0), caches)
+                    )
+                ]
+            )
+            return torch.cat(xs, dim=0), caches
+
+    def _forward_single(self, x: torch.Tensor, channel: int) -> torch.Tensor:
+        weights, biases = self.weights[channel], self.biases[channel]
+        for weight, bias, mask in zip(weights[:-1], biases[:-1], self.masks[:-1]):
+            x = self.activation(F.linear(x, mask * weight, bias))
+        return F.linear(x, self.masks[-1] * weights[-1], biases[-1])
+
+    def _forward_cached_single(
+        self,
+        x: torch.Tensor,
+        feature: int,
+        cache: list[torch.Tensor] | None,
+        channel: int,
+    ) -> tuple[torch.Tensor, list[torch.Tensor]]:
+        weights, biases = self.weights[channel], self.biases[channel]
         if cache is None:
-            cache = [None] * len(self.weights)
+            cache = [None] * len(weights)
         new_cache = []
         in_slices = self.in_slices[feature]
         out_slices = self.out_slices[feature]
         first = True
         for weight, bias, in_slice, out_slice, x_cached in zip(
-            self.weights, self.biases, in_slices, out_slices, cache
+            weights, biases, in_slices, out_slices, cache
         ):
             if first:
                 first = False

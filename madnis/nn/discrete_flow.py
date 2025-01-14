@@ -1,3 +1,4 @@
+from collections.abc import Iterable
 from typing import Any, Callable, Literal
 
 import torch
@@ -29,12 +30,17 @@ class DiscreteFlow(nn.Module, Distribution):
         super().__init__()
 
         self.masked_net = MaskedMLP(
-            input_dims=[dims_c, *dims_in[:-1]], output_dims=dims_in, **mlp_kwargs
+            input_dims=[dims_c, *dims_in[:-1]],
+            output_dims=dims_in,
+            channels=channels,
+            **mlp_kwargs,
         )
         self.dims_in = dims_in
         self.max_dim = max(dims_in)
+        self.channels = 1 if channels is None else channels
         self.prior_prob_function = prior_prob_function
         self.channel_remap_function = channel_remap_function
+
         if prior_prob_mode == "indices":
             self.prior_uses_indices = True
         elif prior_prob_mode == "states":
@@ -72,7 +78,7 @@ class DiscreteFlow(nn.Module, Distribution):
         if isinstance(channel, torch.Tensor):
             return channel
 
-        if channel_remap_function is not None:
+        if self.channel_remap_function is not None:
             raise ValueError(
                 "channel_remap_function not supported if called with list of channel sizes"
             )
@@ -83,6 +89,46 @@ class DiscreteFlow(nn.Module, Distribution):
             state[start_index:end_index] = chan_id
         return state
 
+    def _sort_channels(
+        self,
+        channel: torch.Tensor | list[int] | int | None,
+        tensors: Iterable[torch.Tensor | None, ...],
+    ) -> tuple[
+        list[int] | int | None, torch.Tensor | None, tuple[torch.Tensor | None, ...]
+    ]:
+        if isinstance(channel, torch.Tensor):
+            if self.channel_remap_function is not None:
+                channel = self.channel_remap_function(channel)
+            channel_perm = torch.argsort(channel)
+            channel_sizes = channel.bincount(minlength=self.channels).tolist()
+            perm_tensors = tuple(
+                tensor[channel_perm] if tensor is not None else None
+                for tensor in tensors
+            )
+            return channel_sizes, channel_perm, perm_tensors
+
+        if self.channel_remap_function is not None:
+            if isinstance(channel, int):
+                channel = self.channel_remap_function(channel)
+            elif isinstance(channel, list):
+                raise ValueError(
+                    "channel_remap_function not supported if called with list of channel sizes"
+                )
+        return channel, None, tensors
+
+    def _unsort_channels(
+        self,
+        channel_perm: torch.Tensor | None,
+        tensors: Iterable[torch.Tensor | None, ...],
+    ) -> tuple[torch.Tensor | None, ...]:
+        if channel_perm is None:
+            return tensors
+        channel_perm_inv = torch.argsort(channel_perm)
+        return tuple(
+            tensor[channel_perm_inv] if tensor is not None else None
+            for tensor in tensors
+        )
+
     def log_prob(
         self,
         x: torch.Tensor,
@@ -91,6 +137,8 @@ class DiscreteFlow(nn.Module, Distribution):
         return_net_input: bool = False,
     ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
         """ """
+        state = None
+        prior_probs = None
         if self.prior_prob_function is None:
             if self.cdf_mode:
                 x_indices = (x * self.dims_in_tensor).long()
@@ -135,8 +183,12 @@ class DiscreteFlow(nn.Module, Distribution):
             .flatten(start_dim=1)[:, self.one_hot_mask]
         )
 
+        channel, channel_perm, (x_one_hot, c, state, prior_probs) = self._sort_channels(
+            channel, (x_one_hot, c, state, prior_probs)
+        )
+
         net_input = x_one_hot if c is None else torch.cat((c, x_one_hot), dim=1)
-        net_prob = self.masked_net(net_input[:, : -self.dims_in[-1]]).exp()
+        net_prob = self.masked_net(net_input[:, : -self.dims_in[-1]], channel).exp()
         unnorm_prob = (
             net_prob if self.prior_prob_function is None else net_prob * prior_probs
         )
@@ -175,9 +227,9 @@ class DiscreteFlow(nn.Module, Distribution):
             prob = torch.prod(prob_sums / prob_norms, dim=1)
 
         if return_net_input:
-            return prob.log(), net_input
+            return self._unsort_channels(channel_perm, (prob.log(), net_input))
         else:
-            return prob.log()
+            return self._unsort_channels(channel_perm, (prob.log(),))
 
     def sample(
         self,
@@ -202,16 +254,23 @@ class DiscreteFlow(nn.Module, Distribution):
 
         prob = torch.ones((n,), **options)
         net_cache = None
-        if not self.prior_uses_indices:
-            state = self._init_state(n, channel, device=options["device"])
 
-        x_out = torch.ones(
+        state = (
+            None
+            if self.prior_uses_indices
+            else self._init_state(n, channel, device=options["device"])
+        )
+        channel, channel_perm, (x_in, state) = self._sort_channels(
+            channel, (x_in, state)
+        )
+
+        x_out = torch.zeros(
             (n, len(self.dims_in)),
             device=options["device"],
             dtype=prob.dtype if self.cdf_mode else torch.int64,
         )
         for i, dim in enumerate(self.dims_in):
-            y, net_cache = self.masked_net.forward_cached(x_in, i, net_cache)
+            y, net_cache = self.masked_net.forward_cached(x_in, i, net_cache, channel)
             net_probs = y.exp()
             if self.prior_prob_function is None:
                 unnorm_probs = net_probs
@@ -258,17 +317,19 @@ class DiscreteFlow(nn.Module, Distribution):
                 state = torch.gather(new_states, dim=1, index=samples[:, None])[:, 0]
             x_in = F.one_hot(samples, dim).to(y.dtype)
 
-        extra_returns = []
+        return_list = [x_out]
         if return_log_prob:
-            extra_returns.append(prob.log())
+            return_list.append(prob.log())
         if return_prob:
-            extra_returns.append(prob)
+            return_list.append(prob)
         if return_net_input:
-            extra_returns.append(torch.cat((net_cache[0], x_in), dim=1))
-        if len(extra_returns) > 0:
-            return x_out, *extra_returns
+            x_in_prev = torch.cat([cache[0] for cache in net_cache], dim=0)
+            return_list.append(torch.cat((x_in_prev, x_in), dim=1))
+        return_list = self._unsort_channels(channel_perm, return_list)
+        if len(return_list) > 1:
+            return return_list
         else:
-            return x_out
+            return return_list[0]
 
     def init_with_grid(self, grid: torch.Tensor):
         probs = []
@@ -283,13 +344,15 @@ class DiscreteFlow(nn.Module, Distribution):
             cdf_vals = torch.searchsorted(grid_i, x)
             probs.append(cdf_vals.diff(dim=-1))
         log_probs = torch.cat(probs, dim=-1).log()
+        if len(log_probs.shape) == 1:
+            log_probs = log_probs[None]
 
-        weights = self.masked_net.weights[-1]
-        biases = self.masked_net.biases[-1]
-        # TODO: multichannel case
-        nn.init.zeros_(weights)
-        with torch.no_grad():
-            biases.copy_(log_probs[0, :])
+        for chan_weights, chan_biases, chan_log_probs in zip(
+            self.masked_net.weights, self.masked_net.biases, log_probs
+        ):
+            nn.init.zeros_(chan_weights[-1])
+            with torch.no_grad():
+                chan_biases[-1].copy_(chan_log_probs)
 
 
 class MixedFlow(nn.Module, Distribution):
