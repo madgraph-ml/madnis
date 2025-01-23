@@ -162,6 +162,7 @@ class Integrator(nn.Module):
             Optimizer | Callable[[Iterable[nn.Parameter]], Optimizer] | None
         ) = None,
         batch_size: int = 1024,
+        batch_size_per_channel: int = 0,
         learning_rate: float = 1e-3,
         scheduler: LRScheduler | Callable[[Optimizer], LRScheduler] | None = None,
         uniform_channel_ratio: float = 1.0,
@@ -175,6 +176,7 @@ class Integrator(nn.Module):
         channel_dropping_threshold: float = 0.0,
         channel_dropping_interval: int = 100,
         channel_grouping_mode: Literal["none", "uniform", "learned"] = "none",
+        freeze_cwnet_iteration: int | None = None,
         device: torch.device | None = None,
         dtype: torch.dtype | None = None,
     ):
@@ -205,6 +207,8 @@ class Integrator(nn.Module):
                 called with the model parameters as argument and returns the optimizer. If None, the
                 Adam optimizer is used.
             batch_size: Training batch size
+            batch_size_per_channel: used to compute the batch size as a function of the number of
+                active channels, ``batch_size + n_active_channels * batch_size_per_channel``
             learning_rate: learning rate used for the Adam optimizer
             scheduler: learning rate scheduler for the training. Can be a learning rate scheduler
                 object or a function that gets the optimizer as argument and returns the scheduler.
@@ -233,6 +237,8 @@ class Integrator(nn.Module):
                 loss and integration, even when they grouped together. If "uniform", the channels
                 within each group are sampled with equal probability. If "learned", a discrete
                 normalizing flow is used to sample the channel index within a group.
+            freeze_cwnet_iteration: If not None, specifies the training iteration after which the
+                channel weight network is frozen
             device: torch device used for training and integration. If None, use default device.
             dtype: torch dtype used for training and integration. If None, use default dtype.
         """
@@ -349,7 +355,11 @@ class Integrator(nn.Module):
 
         self.flow = flow
         self.cwnet = cwnet
-        self.batch_size = batch_size
+        self.batch_size_offset = batch_size
+        self.batch_size_per_channel = batch_size_per_channel
+        self.batch_size = batch_size + batch_size_per_channel * (
+            self.integration_channel_count or 1
+        )
         self.uniform_channel_ratio = uniform_channel_ratio
         self.drop_zero_integrands = drop_zero_integrands
         self.batch_size_threshold = batch_size_threshold
@@ -399,6 +409,7 @@ class Integrator(nn.Module):
             self.buffer = None
         self.channel_dropping_threshold = channel_dropping_threshold
         self.channel_dropping_interval = channel_dropping_interval
+        self.freeze_cwnet_iteration = freeze_cwnet_iteration
         hist_shape = (self.integration_channel_count or 1,)
         self.integration_history = Buffer(
             integration_history_length,
@@ -653,6 +664,11 @@ class Integrator(nn.Module):
             self.active_channels_mask[cri_argsort[:n_irrelevant]]
         )
         self.active_channels_mask[cri_argsort[:n_irrelevant]] = False
+        self.batch_size = (
+            self.batch_size_offset
+            + torch.count_nonzero(self.active_channels_mask)
+            * self.batch_size_per_channel
+        )
         if self.buffer is not None:
             self.buffer.filter(
                 lambda batch: self.active_channels_mask[SampleBatch(*batch).channels]
@@ -771,6 +787,7 @@ class Integrator(nn.Module):
         uniform_channel_ratio: float = 0.0,
         train: bool = False,
         channel_weight_mode: Literal["variance", "mean"] = "variance",
+        channel: int | None = None,
     ) -> SampleBatch:
         """
         Draws samples from the flow and evaluates the integrand
@@ -783,18 +800,22 @@ class Integrator(nn.Module):
                 is zero will be removed if drop_zero_integrands is True
             channel_weight_mode: specifies whether the channels are weighted by their mean or
                 variance. Note that weighting by mean can lead to problems for non-positive functions
+            channel: if different from None, samples are only generated for this channel
         Returns:
             Object containing a batch of samples
         """
-        batch_channels = (
-            self._get_channels(
-                n,
-                self._get_channel_contributions(train, channel_weight_mode),
-                uniform_channel_ratio,
+        if channel is None:
+            batch_channels = (
+                self._get_channels(
+                    n,
+                    self._get_channel_contributions(train, channel_weight_mode),
+                    uniform_channel_ratio,
+                )
+                if self.multichannel
+                else None
             )
-            if self.multichannel
-            else None
-        )
+        else:
+            batch_channels = torch.full((n,), channel, device=self.dummy.device)
 
         batches_out = []
         current_batch_size = 0
@@ -882,6 +903,10 @@ class Integrator(nn.Module):
         Returns:
             Training status
         """
+
+        if self.step == self.freeze_cwnet_iteration and self.cwnet is not None:
+            for param in self.cwnet.parameters():
+                param.requires_grad = False
 
         if self.step_type_count == 0:
             buffered = False
@@ -1049,6 +1074,7 @@ class Integrator(nn.Module):
         n: int,
         batch_size: int = 100000,
         channel_weight_mode: Literal["uniform", "mean", "variance"] = "variance",
+        channel: int | None = None,
     ) -> SampleBatch:
         """
         Draws samples and computes their integration weight
@@ -1059,6 +1085,7 @@ class Integrator(nn.Module):
             channel_weight_mode: specifies whether the channels are weighted by their mean,
                 variance or uniformly. Note that weighting by mean can lead to problems for
                 non-positive functions
+            channel: if different from None, samples are only generated for this channel
         Returns:
             ``SampleBatch`` object, see its documentation for details
         """
@@ -1075,6 +1102,7 @@ class Integrator(nn.Module):
                 uniform_channel_ratio,
                 False,
                 channel_weight_mode,
+                channel,
             )
             if self.multichannel:
                 with torch.no_grad():

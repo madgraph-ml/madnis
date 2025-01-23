@@ -287,6 +287,7 @@ class VegasPreTraining:
         n: int,
         batch_size: int = 100000,
         channel_weight_mode: Literal["uniform", "mean", "variance"] = "variance",
+        channel: int | None = None,
     ) -> SampleBatch:
         """
         Draws samples and computes their integration weight
@@ -297,20 +298,25 @@ class VegasPreTraining:
             channel_weight_mode: specifies whether the channels are weighted by their mean,
                 variance or uniformly. Note that weighting by mean can lead to problems for
                 non-positive functions
+            channel: if different from None, samples are only generated for this channel
         Returns:
             ``SampleBatch`` object, see its documentation for details
         """
-        if channel_weight_mode == "uniform":
-            uniform_channel_ratio = 1.0
-            channel_weight_mode = "variance"
+        if channel is None:
+            if channel_weight_mode == "uniform":
+                uniform_channel_ratio = 1.0
+                channel_weight_mode = "variance"
+            else:
+                uniform_channel_ratio = 0.0
+            channel_weights = self.integrator._get_channel_contributions(
+                False, channel_weight_mode
+            )
+            samples_per_channel = self.integrator._get_channels(
+                n, channel_weights, uniform_channel_ratio, return_counts=True
+            )
         else:
-            uniform_channel_ratio = 0.0
-        channel_weights = self.integrator._get_channel_contributions(
-            False, channel_weight_mode
-        )
-        samples_per_channel = self.integrator._get_channels(
-            n, channel_weights, uniform_channel_ratio, return_counts=True
-        )
+            samples_per_channel = torch.zeros((len(self.grids),), dtype=torch.int64)
+            samples_per_channel[channel] = n
 
         samples = []
         for grid_index, (grid, grid_channels) in enumerate(
@@ -321,6 +327,8 @@ class VegasPreTraining:
                 if self.integrator.group_channels
                 else samples_per_channel[grid_channels].sum()
             )
+            if n_samples == 0:
+                continue
             x = np.empty((n_samples, self.input_dim), float)
             jac = np.empty(n_samples, float)
 
