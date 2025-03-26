@@ -1,4 +1,4 @@
-""" Implementation of multi-channel loss functions """
+"""Implementation of multi-channel loss functions"""
 
 from functools import wraps
 from typing import Callable
