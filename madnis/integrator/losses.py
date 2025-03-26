@@ -76,7 +76,8 @@ def stratified_variance(
     if q_sample is None:
         q_sample = q_test
     if channels is None:
-        return _variance(f_true, q_test, q_sample)
+        abs_integral = torch.mean(f_true.detach().abs() / q_sample)
+        return _variance(f_true, q_test, q_sample) / abs_integral.square()
 
     stddev_sum = 0
     abs_integral = 0
