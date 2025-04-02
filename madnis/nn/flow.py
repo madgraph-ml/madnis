@@ -256,14 +256,26 @@ class Flow(nn.Module, Distribution):
                     condition_masks[i] = condition_masks[i][torch.randperm(dims_in)]
             else:
                 raise ValueError(f"Unknown permutation type {permutations}")
-        self.condition_masks = condition_masks
+
+        if dims_in == 1:
+            if condition_masks.shape[1] == 1:
+                self.condition_masks = torch.zeros_like(
+                    condition_masks, dtype=torch.bool
+                )
+            else:
+                self.condition_masks = torch.zeros((1, 1), dtype=torch.bool)
+        else:
+            self.condition_masks = condition_masks
 
         self.subnets = nn.ModuleList()
+        # needed to get one fake dim when 1D only
+        dim1 = 1 if self.dims_in == 1 else 0
         for mask in self.condition_masks:
             dims_cond = torch.count_nonzero(mask)
             self.subnets.append(
                 subnet_constructor(
-                    dims_cond + dims_c, (dims_in - dims_cond) * (3 * bins + 1)
+                    dims_cond + dims_c + dim1,
+                    (dims_in - dims_cond) * (3 * bins + 1),
                 )
             )
 
@@ -359,7 +371,7 @@ class Flow(nn.Module, Distribution):
         for mask, subnet in blocks:
             inv_mask = ~mask
             x_trafo = x[:, inv_mask]
-            x_cond = x[:, mask]
+            x_cond = x[:, mask] if self.dims_in > 1 else torch.ones_like(x_trafo)
             if c is not None:
                 x_cond = torch.cat((x_cond, c), dim=1)
             subnet_out = subnet(x_cond, *channel_args).reshape(
