@@ -382,8 +382,11 @@ class VegasPreTraining:
             ):
                 func_vals *= len(grid_channels)
 
-            alpha = torch.gather(alphas, index=channels[:, None], dim=1)[:, 0]
-            f = jac * func_vals.numpy() * alpha.numpy()
+            if self.integrator.multichannel:
+                alpha = torch.gather(alphas, index=channels[:, None], dim=1)[:, 0]
+                f = jac * func_vals.numpy() * alpha.numpy()
+            else:
+                f = jac * func_vals.numpy()
 
             sample_batch = SampleBatch(
                 x_torch,
@@ -462,7 +465,13 @@ class VegasPreTraining:
         Returns:
             ``IntegrationMetrics`` object, see its documentation for details
         """
-        means, variances, counts = self._compute_integral(self.sample(n))
+        samples = self.sample(n)
+        import pickle
+
+        with open("events.pkl", "wb") as f:
+            print("pickel")
+            pickle.dump(samples, f)
+        means, variances, counts = self._compute_integral(samples)
         self.integrator.integration_history.store(
             means[None], variances[None], counts[None]
         )

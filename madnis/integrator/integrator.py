@@ -389,6 +389,7 @@ class Integrator(nn.Module):
                 None if self.max_stored_channel_weights is None else (channel_count,),
                 () if self.group_channels else None,
                 None,
+                None,
             ]
             buffer_dtypes = [
                 None,
@@ -670,9 +671,17 @@ class Integrator(nn.Module):
             * self.batch_size_per_channel
         )
         if self.buffer is not None:
-            self.buffer.filter(
-                lambda batch: self.active_channels_mask[SampleBatch(*batch).channels]
-            )
+
+            def filter_func(batch):
+                samples = SampleBatch(*batch)
+                channels = (
+                    samples.channels
+                    if samples.integration_channels is None
+                    else samples.integration_channels
+                )
+                return self.active_channels_mask[channels]
+
+            self.buffer.filter(filter_func)
         return n_disabled
 
     def _store_samples(self, samples: SampleBatch):
