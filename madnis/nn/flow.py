@@ -1,6 +1,5 @@
 import math
-from abc import ABC, abstractmethod
-from typing import Callable, Literal
+from typing import Callable, Literal, Protocol
 
 import numpy as np
 import torch
@@ -14,13 +13,12 @@ L2PI = -0.5 * math.log(2 * math.pi)
 Mapping = Callable[[torch.Tensor, bool], tuple[torch.Tensor, torch.Tensor]]
 
 
-class Distribution(ABC):
+class Distribution(Protocol):
     """
-    Abstract base class for a (potentially learnable) distribution that can be used for sampling and
+    Protocol for a (potentially learnable) distribution that can be used for sampling and
     density estimation, like a normalizing flow.
     """
 
-    @abstractmethod
     def sample(
         self,
         n: int,
@@ -54,9 +52,8 @@ class Distribution(ABC):
             ``return_prob``, this function should also return the log-probabilities with shape (n, ),
             the probabilities with shape (n, ).
         """
-        pass
+        ...
 
-    @abstractmethod
     def log_prob(
         self,
         x: torch.Tensor,
@@ -80,14 +77,14 @@ class Distribution(ABC):
         Returns:
             log-probabilities with shape (n, )
         """
-        pass
+        return self.prob(x, c, channel).log()
 
     def prob(
         self,
         x: torch.Tensor,
         c: torch.Tensor | None = None,
         channel: torch.Tensor | list[int] | int | None = None,
-    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+    ) -> torch.Tensor:
         """
         Computes the probabilities of the input data.
 

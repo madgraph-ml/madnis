@@ -22,6 +22,7 @@ class Integrand(nn.Module):
         remapped_dim: int | None = None,
         has_channel_weight_prior: bool = False,
         channel_grouping: ChannelGrouping | None = None,
+        function_includes_sampling: bool = False,
         discrete_dims: list[int] = [],
         discrete_dims_position: Literal["first", "last"] = "first",
         discrete_prior_prob_function: PriorProbFunction | None = None,
@@ -70,6 +71,7 @@ class Integrand(nn.Module):
         self.channel_count = channel_count
         self.has_channel_weight_prior = has_channel_weight_prior
         self.channel_grouping = channel_grouping
+        self.function_includes_sampling = function_includes_sampling
 
         self.discrete_dims = discrete_dims
         self.discrete_dims_position = discrete_dims_position
@@ -77,7 +79,9 @@ class Integrand(nn.Module):
         self.discrete_prior_prob_mode = discrete_prior_prob_mode
         self.discrete_mode = discrete_mode
 
-        if channel_count is None:
+        if function_includes_sampling:
+            self.function = function
+        elif channel_count is None:
             self.function = lambda x, channels: (function(x), None, None)
         elif remapped_dim is None:
             if has_channel_weight_prior:

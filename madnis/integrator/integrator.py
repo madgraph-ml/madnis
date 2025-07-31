@@ -831,36 +831,48 @@ class Integrator(nn.Module):
         while True:
             integration_channels = None
             weight_factor = None
-            if self.group_channels and self.group_channels_uniform:
-                group_sizes = self.channel_group_sizes[batch_channels]
-                chan_in_group = (
-                    torch.rand((n,), device=self.dummy.device, dtype=self.dummy.dtype)
-                    * group_sizes
-                ).long()
-                weight_factor = group_sizes
+            if self.integrand.function_includes_sampling:
                 integration_channels = batch_channels
-                channels = self.channel_group_remap[batch_channels, chan_in_group]
-            else:
-                channels = batch_channels
-
-            with torch.no_grad():
-                x, prob = self.flow.sample(
-                    n,
-                    channel=channels,
-                    return_prob=True,
-                    device=self.dummy.device,
-                    dtype=self.dummy.dtype,
+                x, prob, weight, y, alphas_prior, channels = self.integrand.function(
+                    batch_channels
                 )
-            weight, y, alphas_prior = self.integrand(x, channels)
-
-            if self.group_channels and not self.group_channels_uniform:
-                if self.group_channels_cdf_mode:
+            else:
+                if self.group_channels and self.group_channels_uniform:
                     group_sizes = self.channel_group_sizes[batch_channels]
-                    chan_in_group = (x[:, self.channel_group_dim] * group_sizes).long()
+                    chan_in_group = (
+                        torch.rand(
+                            (n,), device=self.dummy.device, dtype=self.dummy.dtype
+                        )
+                        * group_sizes
+                    ).long()
+                    weight_factor = group_sizes
+                    integration_channels = batch_channels
+                    channels = self.channel_group_remap[batch_channels, chan_in_group]
                 else:
-                    chan_in_group = x[:, self.channel_group_dim].long()
-                integration_channels = batch_channels
-                channels = self.channel_group_remap[integration_channels, chan_in_group]
+                    channels = batch_channels
+
+                with torch.no_grad():
+                    x, prob = self.flow.sample(
+                        n,
+                        channel=channels,
+                        return_prob=True,
+                        device=self.dummy.device,
+                        dtype=self.dummy.dtype,
+                    )
+                weight, y, alphas_prior = self.integrand(x, channels)
+
+                if self.group_channels and not self.group_channels_uniform:
+                    if self.group_channels_cdf_mode:
+                        group_sizes = self.channel_group_sizes[batch_channels]
+                        chan_in_group = (
+                            x[:, self.channel_group_dim] * group_sizes
+                        ).long()
+                    else:
+                        chan_in_group = x[:, self.channel_group_dim].long()
+                    integration_channels = batch_channels
+                    channels = self.channel_group_remap[
+                        integration_channels, chan_in_group
+                    ]
 
             if weight_factor is not None:
                 weight *= weight_factor
