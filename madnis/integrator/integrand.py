@@ -23,6 +23,7 @@ class Integrand(nn.Module):
         has_channel_weight_prior: bool = False,
         channel_grouping: ChannelGrouping | None = None,
         function_includes_sampling: bool = False,
+        update_active_channels_mask: Callable[[torch.Tensor], None] | None = None,
         discrete_dims: list[int] = [],
         discrete_dims_position: Literal["first", "last"] = "first",
         discrete_prior_prob_function: PriorProbFunction | None = None,
@@ -72,6 +73,7 @@ class Integrand(nn.Module):
         self.has_channel_weight_prior = has_channel_weight_prior
         self.channel_grouping = channel_grouping
         self.function_includes_sampling = function_includes_sampling
+        self.update_active_channels_mask_func = update_active_channels_mask
 
         self.discrete_dims = discrete_dims
         self.discrete_dims_position = discrete_dims_position
@@ -157,6 +159,17 @@ class Integrand(nn.Module):
             return self.channel_id_map[channels].item()
         else:
             return self.channel_id_map[channels]
+
+    def update_active_channels_mask(self, mask: torch.Tensor) -> None:
+        if self.update_active_channels_mask_func is None:
+            return
+
+        full_mask = mask[
+            self.remap_channels(
+                torch.arange(len(self.channel_grouping.channels), device=mask.device)
+            )
+        ]
+        self.update_active_channels_mask_func(full_mask)
 
     def forward(
         self, x: torch.Tensor, channels: torch.Tensor | None

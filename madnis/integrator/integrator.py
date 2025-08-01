@@ -665,6 +665,7 @@ class Integrator(nn.Module):
             self.active_channels_mask[cri_argsort[:n_irrelevant]]
         )
         self.active_channels_mask[cri_argsort[:n_irrelevant]] = False
+        self.integrand.update_active_channels_mask(self.active_channels_mask)
         self.batch_size = (
             self.batch_size_offset
             + torch.count_nonzero(self.active_channels_mask)
