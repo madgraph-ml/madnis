@@ -12,10 +12,10 @@ import torch.nn.functional as F
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import LRScheduler
 
-from ..nn import MLP, DiscreteFlow, Distribution, Flow, MixedFlow
+from ..nn import MLP, DiscreteMADE, Distribution, Flow, MixedFlow
 from .buffer import Buffer
 from .integrand import Integrand
-from .losses import MultiChannelLoss, kl_divergence, stratified_variance
+from .losses import MultiChannelLoss, kl_divergence, stratified_variance, variance
 from .metrics import (
     IntegrationMetrics,
     UnweightingMetrics,
@@ -193,7 +193,7 @@ class Integrator(nn.Module):
             flow_kwargs: If flow is None, these keyword arguments are passed to the `Flow`
                 constructor.
             discrete_flow_kwargs: If flow is None, these keyword arguments are passed to the
-                ``MixedFlow`` or ``DiscreteFlow`` constructor.
+                ``MixedFlow`` or ``DiscreteMADE`` constructor.
             train_channel_weights: If True, construct a channel weight network and train it. Only
                 necessary if cwnet is None.
             cwnet: network used for the trainable channel weights. If None and
@@ -261,7 +261,6 @@ class Integrator(nn.Module):
             self.integration_channel_count = integrand.unique_channel_count()
             self.group_channels = True
             self.group_channels_uniform = False
-            self.group_channels_cdf_mode = integrand.discrete_mode == "cdf"
             self.channel_group_dim = (
                 0
                 if integrand.discrete_dims_position == "first"
@@ -308,13 +307,12 @@ class Integrator(nn.Module):
                     **flow_kwargs,
                 )
             elif len(discrete_dims) == input_dim:
-                flow = DiscreteFlow(
+                # TODO: also allow transformer here
+                flow = DiscreteMADE(
                     dims_in=discrete_dims,
                     channels=integrand.unique_channel_count(),
                     channel_remap_function=channel_remap_function,
                     prior_prob_function=integrand.discrete_prior_prob_function,
-                    prior_prob_mode=integrand.discrete_prior_prob_mode,
-                    mode=integrand.discrete_mode,
                     **discrete_flow_kwargs,
                 )
             else:
@@ -330,8 +328,6 @@ class Integrator(nn.Module):
                     discrete_kwargs=dict(
                         channel_remap_function=channel_remap_function,
                         prior_prob_function=integrand.discrete_prior_prob_function,
-                        prior_prob_mode=integrand.discrete_prior_prob_mode,
-                        mode=integrand.discrete_mode,
                         **discrete_flow_kwargs,
                     ),
                 )
@@ -451,28 +447,27 @@ class Integrator(nn.Module):
             return self._restore_prior(samples)
 
         if samples.alphas_prior is None:
-            log_alpha_prior = samples.x.new_zeros(
+            alpha_prior = samples.x.new_ones(
                 (samples.x.shape[0], self.integrand.channel_count)
             )
         else:
-            log_alpha_prior = self._restore_prior(samples).log()
-        log_alpha = log_alpha_prior.clone()
-        mask = samples.func_vals != 0
-        y = samples.x if samples.y is None else samples.y
-        log_alpha[mask] += self.cwnet(y[mask])
-        alpha = torch.zeros_like(log_alpha)
+            alpha_prior = self._restore_prior(samples)
+
         if self.group_channels:
             active_channels_mask = self.active_channels_mask[
                 self.integrand.remap_channels(
-                    torch.arange(alpha.shape[1], device=alpha.device)
+                    torch.arange(alpha_prior.shape[1], device=alpha_prior.device)
                 )
             ]
         else:
             active_channels_mask = self.active_channels_mask
-        alpha[:, active_channels_mask] = F.softmax(
-            log_alpha[:, active_channels_mask], dim=1
-        )
-        return alpha
+
+        alpha = alpha_prior * active_channels_mask
+        mask = samples.func_vals != 0
+        y = samples.x if samples.y is None else samples.y
+        alpha[mask] *= self.cwnet(y[mask]).exp()
+        ret = alpha / alpha.sum(dim=1, keepdim=True)
+        return ret
 
     def _compute_integral(
         self, samples: SampleBatch
@@ -863,13 +858,7 @@ class Integrator(nn.Module):
                 weight, y, alphas_prior = self.integrand(x, channels)
 
                 if self.group_channels and not self.group_channels_uniform:
-                    if self.group_channels_cdf_mode:
-                        group_sizes = self.channel_group_sizes[batch_channels]
-                        chan_in_group = (
-                            x[:, self.channel_group_dim] * group_sizes
-                        ).long()
-                    else:
-                        chan_in_group = x[:, self.channel_group_dim].long()
+                    chan_in_group = x[:, self.channel_group_dim].long()
                     integration_channels = batch_channels
                     channels = self.channel_group_remap[
                         integration_channels, chan_in_group

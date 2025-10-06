@@ -12,6 +12,7 @@ from .losses import (
     multi_channel_loss,
     rkl_divergence,
     stratified_variance,
+    variance,
 )
 from .metrics import (
     IntegrationMetrics,
@@ -29,6 +30,7 @@ __all__ = [
     "Buffer",
     "multi_channel_loss",
     "stratified_variance",
+    "variance",
     "kl_divergence",
     "rkl_divergence",
     "ChannelGroup",

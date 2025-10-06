@@ -3,7 +3,6 @@ from typing import Callable, Literal
 import torch
 import torch.nn as nn
 
-from ..nn import PriorProbFunction
 from .channel_grouping import ChannelGrouping
 
 
@@ -26,9 +25,9 @@ class Integrand(nn.Module):
         update_active_channels_mask: Callable[[torch.Tensor], None] | None = None,
         discrete_dims: list[int] = [],
         discrete_dims_position: Literal["first", "last"] = "first",
-        discrete_prior_prob_function: PriorProbFunction | None = None,
-        discrete_prior_prob_mode: Literal["indices", "states"] = "indices",
-        discrete_mode: Literal["indices", "cdf"] = "indices",
+        discrete_prior_prob_function: (
+            Callable[[torch.Tensor, int], torch.Tensor] | None
+        ) = None,
     ):
         """
         Args:
@@ -78,8 +77,6 @@ class Integrand(nn.Module):
         self.discrete_dims = discrete_dims
         self.discrete_dims_position = discrete_dims_position
         self.discrete_prior_prob_function = discrete_prior_prob_function
-        self.discrete_prior_prob_mode = discrete_prior_prob_mode
-        self.discrete_mode = discrete_mode
 
         if function_includes_sampling:
             self.function = function
