@@ -663,7 +663,7 @@ class Integrator(nn.Module):
         self.integrand.update_active_channels_mask(self.active_channels_mask)
         self.batch_size = (
             self.batch_size_offset
-            + torch.count_nonzero(self.active_channels_mask)
+            + torch.count_nonzero(self.active_channels_mask).item()
             * self.batch_size_per_channel
         )
         if self.buffer is not None:
@@ -747,7 +747,7 @@ class Integrator(nn.Module):
             Otherwise, Tensor of channel numbers with shape (n,)
         """
         assert channel_weights.shape == (self.integration_channel_count,)
-        n_active_channels = torch.count_nonzero(self.active_channels_mask)
+        n_active_channels = torch.count_nonzero(self.active_channels_mask).item()
         uniform_per_channel = int(
             np.ceil(n * uniform_channel_ratio / n_active_channels)
         )
