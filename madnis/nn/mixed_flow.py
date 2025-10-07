@@ -15,7 +15,7 @@ class MixedFlow(nn.Module, Distribution):
         dims_in_discrete: list[int],
         dims_c: int = 0,
         discrete_dims_position: Literal["first", "last"] = "first",
-        discrete_mode: Literal["made", "transformer"] = "made",
+        discrete_model: Literal["made", "transformer"] = "made",
         channels: int | None = None,
         continuous_kwargs: dict[str, Any] = {},
         discrete_kwargs: dict[str, Any] = {},
@@ -37,14 +37,14 @@ class MixedFlow(nn.Module, Distribution):
             dims_c_discrete = dims_c + dims_in_continuous
             dims_c_continuous = dims_c
 
-        if discrete_mode == "made":
+        if discrete_model == "made":
             self.discrete_flow = DiscreteMADE(
                 dims_in=dims_in_discrete,
                 dims_c=dims_c_discrete,
                 channels=channels,
                 **discrete_kwargs,
             )
-        elif discrete_mode == "transformer":
+        elif discrete_model == "transformer":
             self.discrete_flow = DiscreteTransformer(
                 dims_in=dims_in_discrete,
                 dims_c=dims_c_discrete,
@@ -55,7 +55,7 @@ class MixedFlow(nn.Module, Distribution):
                     "DiscreteTransformer only supported for single-channel integration"
                 )
         else:
-            raise ValueError("discrete_mode must be 'made' or 'transformer'")
+            raise ValueError("discrete_model must be 'made' or 'transformer'")
 
         self.continuous_flow = Flow(
             dims_in=dims_in_continuous,
@@ -88,7 +88,7 @@ class MixedFlow(nn.Module, Distribution):
             log-probabilities with shape (n, )
         """
         if self.discrete_dims_first:
-            x_discrete = x[:, : self.dims_in_discrete]
+            x_discrete = x[:, : self.dims_in_discrete].long()
             log_prob_discrete, condition = self.discrete_flow.log_prob(
                 x_discrete, c=c, channel=channel, return_one_hot=True
             )
@@ -104,7 +104,7 @@ class MixedFlow(nn.Module, Distribution):
                 x_continuous if c is None else torch.cat((c, x_continuous), dim=1)
             )
             log_prob_discrete = self.discrete_flow.log_prob(
-                x[:, self.dim_in_continuous], c=condition, channel=channel
+                x[:, self.dim_in_continuous].long(), c=condition, channel=channel
             )
         return log_prob_discrete + log_prob_continuous
 
@@ -136,7 +136,7 @@ class MixedFlow(nn.Module, Distribution):
                 device=device,
                 dtype=dtype,
             )
-            x = torch.cat((x_discrete, x_continuous), dim=1)
+            x = torch.cat((x_discrete.to(x_continuous.dtype), x_continuous), dim=1)
         else:
             x_continuous, log_prob_continuous = self.continuous_flow.sample(
                 n=n,
@@ -156,7 +156,7 @@ class MixedFlow(nn.Module, Distribution):
                 device=device,
                 dtype=dtype,
             )
-            x = torch.cat((x_continuous, x_discrete), dim=1)
+            x = torch.cat((x_continuous.to(x_continuous.dtype), x_discrete), dim=1)
 
         extra_returns = []
         if return_log_prob:
@@ -167,18 +167,3 @@ class MixedFlow(nn.Module, Distribution):
             return x, *extra_returns
         else:
             return x
-
-    def init_with_grid(self, grid: torch.Tensor):
-        """
-        Initializes the flow using a VEGAS grid, i.e. from bins with varying width and equal
-        probability. It splits the grid dimensions into discrete and continuous features and
-        then calls the ``init_with_grid`` methods of the discrete and continuous flow classes.
-        """
-        if self.discrete_dims_first:
-            grid_discrete = grid[:, : self.dims_in_discrete]
-            grid_continuous = grid[:, self.dims_in_discrete :]
-        else:
-            grid_discrete = grid[:, self.dims_in_continuous :]
-            grid_continuous = grid[:, : self.dims_in_continuous]
-        self.discrete_flow.init_with_grid(grid_discrete)
-        self.continuous_flow.init_with_grid(grid_continuous)

@@ -154,6 +154,7 @@ class Integrator(nn.Module):
         flow: Distribution | None = None,
         flow_kwargs: dict[str, Any] = {},
         discrete_flow_kwargs: dict[str, Any] = {},
+        discrete_model: Literal["made", "transformer"] = "made",
         train_channel_weights: bool = True,
         cwnet: nn.Module | None = None,
         cwnet_kwargs: dict[str, Any] = {},
@@ -307,29 +308,45 @@ class Integrator(nn.Module):
                     **flow_kwargs,
                 )
             elif len(discrete_dims) == input_dim:
-                # TODO: also allow transformer here
-                flow = DiscreteMADE(
-                    dims_in=discrete_dims,
-                    channels=integrand.unique_channel_count(),
-                    channel_remap_function=channel_remap_function,
+                if discrete_model == "made":
+                    flow = DiscreteMADE(
+                        dims_in=discrete_dims,
+                        channels=integrand.unique_channel_count(),
+                        channel_remap_function=channel_remap_function,
+                        prior_prob_function=integrand.discrete_prior_prob_function,
+                        **discrete_flow_kwargs,
+                    )
+                elif discrete_model == "transformer":
+                    flow = DiscreteTransformer(
+                        dims_in=discrete_dims,
+                        prior_prob_function=integrand.discrete_prior_prob_function,
+                        **discrete_flow_kwargs,
+                    )
+                    if self.multichannel:
+                        raise NotImplementedError(
+                            "DiscreteTransformer only supported for "
+                            "single-channel integration"
+                        )
+                else:
+                    raise ValueError("discrete_model must be 'made' or 'transformer'")
+            else:
+                discrete_kwargs = dict(
                     prior_prob_function=integrand.discrete_prior_prob_function,
                     **discrete_flow_kwargs,
                 )
-            else:
+                if self.multichannel:
+                    discrete_kwargs["channel_remap_function"] = channel_remap_function
                 flow = MixedFlow(
                     dims_in_continuous=input_dim - len(discrete_dims),
                     dims_in_discrete=discrete_dims,
                     discrete_dims_position=integrand.discrete_dims_position,
+                    discrete_model=discrete_model,
                     channels=integrand.unique_channel_count(),
                     continuous_kwargs=dict(
                         channel_remap_function=channel_remap_function,
                         **flow_kwargs,
                     ),
-                    discrete_kwargs=dict(
-                        channel_remap_function=channel_remap_function,
-                        prior_prob_function=integrand.discrete_prior_prob_function,
-                        **discrete_flow_kwargs,
-                    ),
+                    discrete_kwargs=discrete_kwargs,
                 )
 
         if cwnet is None and train_channel_weights and self.multichannel:

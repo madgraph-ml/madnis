@@ -26,7 +26,7 @@ class DiscreteTransformer(nn.Module, Distribution):
         self.dims_in = dims_in
         self.prior_prob_function = prior_prob_function
 
-        max_options = max(dims_in)
+        self.max_dim = max(dims_in)
         n_dims = len(dims_in)
         self.transformer = nn.TransformerEncoder(
             encoder_layer=nn.TransformerEncoderLayer(
@@ -41,13 +41,13 @@ class DiscreteTransformer(nn.Module, Distribution):
         )
         self.mlp = MLP(
             features_in=embedding_dim,
-            features_out=max_options,
+            features_out=self.max_dim,
             layers=mlp_layers,
             units=mlp_units,
             activation=mlp_activation,
         )
         self.x_embedding = nn.Embedding(
-            num_embeddings=max_options, embedding_dim=embedding_dim
+            num_embeddings=self.max_dim, embedding_dim=embedding_dim
         )
         self.c_embedding = nn.Linear(dims_c, embedding_dim) if dims_c > 0 else None
         self.pos_embedding = nn.Embedding(
@@ -58,7 +58,7 @@ class DiscreteTransformer(nn.Module, Distribution):
             "causal_mask",
             torch.ones((n_dims, n_dims), dtype=torch.bool).triu(diagonal=1),
         )
-        prior_mask = torch.zeros((n_dims, max_options))
+        prior_mask = torch.zeros((n_dims, self.max_dim))
         for i, n_opts in enumerate(self.dims_in):
             prior_mask[i, :n_opts] = 1
         self.register_buffer("prior_mask", prior_mask)
@@ -95,7 +95,7 @@ class DiscreteTransformer(nn.Module, Distribution):
         if return_one_hot:
             x_one_hot = (
                 F.one_hot(x, self.max_dim)
-                .to(self.dummy.dtype)
+                .to(prob.dtype)
                 .flatten(start_dim=1)[:, self.one_hot_mask]
             )
             return prob.log(), x_one_hot
@@ -161,7 +161,7 @@ class DiscreteTransformer(nn.Module, Distribution):
         if return_one_hot:
             return_list.append(
                 F.one_hot(x, self.max_dim)
-                .to(self.dummy.dtype)
+                .to(dtype)
                 .flatten(start_dim=1)[:, self.one_hot_mask]
             )
         if len(return_list) > 1:
