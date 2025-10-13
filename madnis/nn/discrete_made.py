@@ -90,8 +90,7 @@ class DiscreteMADE(nn.Module, Distribution):
         x: torch.Tensor,
         c: torch.Tensor | None = None,
         channel: torch.Tensor | list[int] | int | None = None,
-        return_one_hot: bool = False,
-    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+    ) -> torch.Tensor:
         """ """
         if self.prior_prob_function is not None:
             prior_probs = torch.cat(
@@ -132,10 +131,7 @@ class DiscreteMADE(nn.Module, Distribution):
         )
         prob = torch.prod(prob_sums / prob_norms, dim=1)
 
-        if return_one_hot:
-            return self._unsort_channels(channel_perm, (prob.log(), net_input))
-        else:
-            return self._unsort_channels(channel_perm, (prob.log(),))[0]
+        return self._unsort_channels(channel_perm, (prob.log(),))[0]
 
     def sample(
         self,
@@ -146,7 +142,6 @@ class DiscreteMADE(nn.Module, Distribution):
         return_prob: bool = False,
         device: torch.device | None = None,
         dtype: torch.dtype | None = None,
-        return_one_hot: bool = False,
     ) -> torch.Tensor | tuple[torch.Tensor, ...]:
         """ """
         if n is None:
@@ -190,9 +185,6 @@ class DiscreteMADE(nn.Module, Distribution):
             return_list.append(prob.log())
         if return_prob:
             return_list.append(prob)
-        if return_one_hot:
-            x_in_prev = torch.cat([cache[0] for cache in net_cache], dim=0)
-            return_list.append(torch.cat((x_in_prev, x_in), dim=1))
         return_list = self._unsort_channels(channel_perm, return_list)
         if len(return_list) > 1:
             return return_list

@@ -62,15 +62,13 @@ class DiscreteTransformer(nn.Module, Distribution):
         for i, n_opts in enumerate(self.dims_in):
             prior_mask[i, :n_opts] = 1
         self.register_buffer("prior_mask", prior_mask)
-        self.register_buffer("one_hot_mask", prior_mask.flatten().bool())
 
     def log_prob(
         self,
         x: torch.Tensor,
         c: torch.Tensor | None = None,
         channel: torch.Tensor | list[int] | int | None = None,
-        return_one_hot: bool = False,
-    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+    ) -> torch.Tensor:
         x_embed = F.pad(self.x_embedding(x[:, :-1]), (0, 0, 1, 0))
         pos_embed = self.pos_embedding(
             torch.arange(len(self.dims_in), device=x.device)[None, :]
@@ -92,15 +90,7 @@ class DiscreteTransformer(nn.Module, Distribution):
             dim=1,
         )
 
-        if return_one_hot:
-            x_one_hot = (
-                F.one_hot(x, self.max_dim)
-                .to(prob.dtype)
-                .flatten(start_dim=1)[:, self.one_hot_mask]
-            )
-            return prob.log(), x_one_hot
-        else:
-            return prob.log()
+        return prob.log()
 
     def sample(
         self,
@@ -111,7 +101,6 @@ class DiscreteTransformer(nn.Module, Distribution):
         return_prob: bool = False,
         device: torch.device | None = None,
         dtype: torch.dtype | None = None,
-        return_one_hot: bool = False,
     ) -> torch.Tensor | tuple[torch.Tensor, ...]:
         if n is None:
             n = len(c)
@@ -158,12 +147,6 @@ class DiscreteTransformer(nn.Module, Distribution):
             return_list.append(prob.log())
         if return_prob:
             return_list.append(prob)
-        if return_one_hot:
-            return_list.append(
-                F.one_hot(x, self.max_dim)
-                .to(dtype)
-                .flatten(start_dim=1)[:, self.one_hot_mask]
-            )
         if len(return_list) > 1:
             return return_list
         else:

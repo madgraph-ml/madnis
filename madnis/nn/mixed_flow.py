@@ -2,6 +2,7 @@ from typing import Any, Literal
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from .discrete_made import DiscreteMADE
 from .discrete_transformer import DiscreteTransformer
@@ -64,6 +65,20 @@ class MixedFlow(nn.Module, Distribution):
             **continuous_kwargs,
         )
 
+        self.max_dim_discrete = max(dims_in_discrete)
+        one_hot_mask = []
+        for dim in dims_in_discrete:
+            one_hot_mask.extend([True] * dim + [False] * (self.max_dim_discrete - dim))
+        self.register_buffer("one_hot_mask", torch.tensor(one_hot_mask))
+        self.register_buffer("dummy", torch.tensor([0.0]))
+
+    def encode_discrete(self, indices: torch.Tensor) -> torch.Tensor:
+        return (
+            F.one_hot(indices, self.max_dim_discrete)
+            .to(self.dummy.dtype)
+            .flatten(start_dim=1)[:, self.one_hot_mask]
+        )
+
     def log_prob(
         self,
         x: torch.Tensor,
@@ -89,9 +104,12 @@ class MixedFlow(nn.Module, Distribution):
         """
         if self.discrete_dims_first:
             x_discrete = x[:, : self.dims_in_discrete].long()
-            log_prob_discrete, condition = self.discrete_flow.log_prob(
-                x_discrete, c=c, channel=channel, return_one_hot=True
+            log_prob_discrete = self.discrete_flow.log_prob(
+                x_discrete, c=c, channel=channel
             )
+            condition = self.encode_discrete(x_discrete)
+            if c is not None:
+                condition = torch.cat((c, condition), dim=1)
             log_prob_continuous = self.continuous_flow.log_prob(
                 x[:, self.dims_in_discrete :], c=condition, channel=channel
             )
@@ -120,15 +138,17 @@ class MixedFlow(nn.Module, Distribution):
     ) -> torch.Tensor | tuple[torch.Tensor, ...]:
         """ """
         if self.discrete_dims_first:
-            x_discrete, prob_discrete, condition = self.discrete_flow.sample(
+            x_discrete, prob_discrete = self.discrete_flow.sample(
                 n=n,
                 c=c,
                 channel=channel,
                 return_prob=True,
                 device=device,
                 dtype=dtype,
-                return_one_hot=True,
             )
+            condition = self.encode_discrete(x_discrete)
+            if c is not None:
+                condition = torch.cat((c, condition), dim=1)
             x_continuous, log_prob_continuous = self.continuous_flow.sample(
                 c=condition,
                 channel=channel,
