@@ -21,3 +21,9 @@ repos:
     hooks:
       - id: isort
         args: ['--settings-path=./pyproject.toml']
+  - repo: https://github.com/asottile/pyupgrade
+    rev: v3.19.0
+    hooks:
+      - id: pyupgrade
+        # set your minimum supported Python here
+        args: ["--py311-plus"]

@@ -1,7 +1,7 @@
 """Implementation of multi-channel loss functions"""
 
+from collections.abc import Callable
 from functools import wraps
-from typing import Callable
 
 import torch
 

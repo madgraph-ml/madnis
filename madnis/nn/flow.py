@@ -1,6 +1,7 @@
 import math
 from abc import ABC, abstractmethod
-from typing import Callable, Literal
+from collections.abc import Callable
+from typing import Literal
 
 import numpy as np
 import torch
