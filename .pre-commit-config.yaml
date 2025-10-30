@@ -26,4 +26,4 @@ repos:
     hooks:
       - id: pyupgrade
         # set your minimum supported Python here
-        args: ["--py311-plus"]
+        args: ["--py310-plus"]
