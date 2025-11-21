@@ -254,6 +254,7 @@ class Integrator(nn.Module):
         if integrand.channel_grouping is None or channel_grouping_mode == "none":
             self.integration_channel_count = integrand.channel_count
             self.group_channels = False
+            self.group_channels_uniform = False
         elif channel_grouping_mode == "uniform":
             self.integration_channel_count = integrand.unique_channel_count()
             self.group_channels = True
@@ -1145,4 +1146,10 @@ class Integrator(nn.Module):
             else:
                 batch.weights = batch.func_vals / batch.q_sample
             samples.append(batch)
-        return SampleBatch.cat(samples)
+        cat_samples = SampleBatch.cat(samples)
+        if self.multichannel:
+            norm_factors = len(cat_samples.channels) / torch.bincount(
+                cat_samples.channels, minlength=self.integration_channel_count
+            )
+            cat_samples.weights *= norm_factors[cat_samples.channels]
+        return cat_samples
