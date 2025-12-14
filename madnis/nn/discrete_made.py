@@ -175,7 +175,7 @@ class DiscreteMADE(nn.Module, Distribution):
             norm = cdf[:, -1]
             cdf = cdf / norm[:, None]
             r = torch.rand((y.shape[0], 1), **options)
-            samples = torch.searchsorted(cdf, r)[:, 0]
+            samples = torch.clip(torch.searchsorted(cdf, r)[:, 0], max=cdf.shape[1] - 1)
             x_out[:, i] = samples
             prob = prob * torch.gather(unnorm_probs, 1, samples[:, None])[:, 0] / norm
             x_in = F.one_hot(samples, dim).to(y.dtype)
