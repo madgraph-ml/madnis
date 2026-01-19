@@ -12,10 +12,10 @@ import torch.nn.functional as F
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import LRScheduler
 
-from ..nn import MLP, Distribution, Flow
+from ..nn import MLP, DiscreteMADE, DiscreteTransformer, Distribution, Flow, MixedFlow
 from .buffer import Buffer
 from .integrand import Integrand
-from .losses import MultiChannelLoss, kl_divergence, stratified_variance
+from .losses import MultiChannelLoss, kl_divergence, stratified_variance, variance
 from .metrics import (
     IntegrationMetrics,
     UnweightingMetrics,
@@ -59,6 +59,8 @@ class SampleBatch:
             integration
         alpha_channel_indices: channel indices if not all prior channel weights are stored,
             otherwise None
+        integration_channels: index of the channel group in case the integration is performed at the
+            level of channel groups, shape (n, ), otherwise None
         weights: integration weight, shape (n, ). Only set when returned from Integrator.sample
             function, otherwise None.
         alphas: channel weights including learned correction, shape (n, channels). Only set when
@@ -75,6 +77,7 @@ class SampleBatch:
     channels: torch.Tensor | None
     alphas_prior: torch.Tensor | None = None
     alpha_channel_indices: torch.Tensor | None = None
+    integration_channels: torch.Tensor | None = None
     weights: torch.Tensor | None = None
     alphas: torch.Tensor | None = None
     zero_counts: torch.Tensor | None = None
@@ -150,6 +153,8 @@ class Integrator(nn.Module):
         dims: int = 0,
         flow: Distribution | None = None,
         flow_kwargs: dict[str, Any] = {},
+        discrete_flow_kwargs: dict[str, Any] = {},
+        discrete_model: Literal["made", "transformer"] = "made",
         train_channel_weights: bool = True,
         cwnet: nn.Module | None = None,
         cwnet_kwargs: dict[str, Any] = {},
@@ -158,6 +163,7 @@ class Integrator(nn.Module):
             Optimizer | Callable[[Iterable[nn.Parameter]], Optimizer] | None
         ) = None,
         batch_size: int = 1024,
+        batch_size_per_channel: int = 0,
         learning_rate: float = 1e-3,
         scheduler: LRScheduler | Callable[[Optimizer], LRScheduler] | None = None,
         uniform_channel_ratio: float = 1.0,
@@ -170,7 +176,8 @@ class Integrator(nn.Module):
         max_stored_channel_weights: int | None = None,
         channel_dropping_threshold: float = 0.0,
         channel_dropping_interval: int = 100,
-        group_channels_in_loss: bool = False,
+        channel_grouping_mode: Literal["none", "uniform", "learned"] = "none",
+        freeze_cwnet_iteration: int | None = None,
         device: torch.device | None = None,
         dtype: torch.dtype | None = None,
     ):
@@ -178,20 +185,22 @@ class Integrator(nn.Module):
         Args:
             integrand: the function to be integrated. In the case of a simple single-channel
                 integration, the integrand function can directly be passed to the integrator.
-                In more complicated cases, like multi-channel integrals, use the `Integrand` class.
+                In more complicated cases, like multi-channel integrals, use the ``Integrand`` class.
             dims: dimension of the integration space. Only required if a simple function is given
                 as integrand.
             flow: sampling distribution used for the integration. If None, a flow is constructed
-                using the `Flow` class. Otherwise, it has to be compatible with a normalizing flow,
-                i.e. have the interface defined in the `Distribution` class.
+                using the ``Flow`` class. Otherwise, it has to be compatible with a normalizing flow,
+                i.e. have the interface defined in the ``Distribution`` class.
             flow_kwargs: If flow is None, these keyword arguments are passed to the `Flow`
                 constructor.
+            discrete_flow_kwargs: If flow is None, these keyword arguments are passed to the
+                ``MixedFlow`` or ``DiscreteMADE`` constructor.
             train_channel_weights: If True, construct a channel weight network and train it. Only
                 necessary if cwnet is None.
             cwnet: network used for the trainable channel weights. If None and
-                train_channel_weights is True, the cwnet is built using the `MLP` class.
+                train_channel_weights is True, the cwnet is built using the ``MLP`` class.
             cwnet_kwargs: If cwnet is None and train_channel_weights is True, these keyword
-                arguments are passed to the `MLP` constructor.
+                arguments are passed to the ``MLP`` constructor.
             loss: Loss function used for training. If not provided, the KL divergence is chosen in
                 the single-channel case and the stratified variance is chosen in the multi-channel
                 case.
@@ -199,6 +208,8 @@ class Integrator(nn.Module):
                 called with the model parameters as argument and returns the optimizer. If None, the
                 Adam optimizer is used.
             batch_size: Training batch size
+            batch_size_per_channel: used to compute the batch size as a function of the number of
+                active channels, ``batch_size + n_active_channels * batch_size_per_channel``
             learning_rate: learning rate used for the Adam optimizer
             scheduler: learning rate scheduler for the training. Can be a learning rate scheduler
                 object or a function that gets the optimizer as argument and returns the scheduler.
@@ -223,9 +234,12 @@ class Integrator(nn.Module):
                 integrand that is smaller than this threshold are dropped
             channel_dropping_interval: number of training steps after which channel dropping
                 is performed
-            group_channels_in_loss: If True, grouped channels are treated as a single channel in
-                the loss function. This may lead to more stable trainings but also prevents the
-                optimization of the channel weights of grouped channels relative to each other.
+            channel_grouping_mode: If "none" all channels are treated as separate channels in the
+                loss and integration, even when they grouped together. If "uniform", the channels
+                within each group are sampled with equal probability. If "learned", a discrete
+                normalizing flow is used to sample the channel index within a group.
+            freeze_cwnet_iteration: If not None, specifies the training iteration after which the
+                channel weight network is frozen
             device: torch device used for training and integration. If None, use default device.
             dtype: torch dtype used for training and integration. If None, use default dtype.
         """
@@ -235,13 +249,107 @@ class Integrator(nn.Module):
             integrand = Integrand(integrand, dims)
         self.integrand = integrand
         self.multichannel = integrand.channel_count is not None
+        discrete_dims = integrand.discrete_dims
+        input_dim = integrand.input_dim
+        if integrand.channel_grouping is None or channel_grouping_mode == "none":
+            self.integration_channel_count = integrand.channel_count
+            self.group_channels = False
+            self.group_channels_uniform = False
+        elif channel_grouping_mode == "uniform":
+            self.integration_channel_count = integrand.unique_channel_count()
+            self.group_channels = True
+            self.group_channels_uniform = True
+        elif channel_grouping_mode == "learned":
+            self.integration_channel_count = integrand.unique_channel_count()
+            self.group_channels = True
+            self.group_channels_uniform = False
+            self.channel_group_dim = (
+                0
+                if integrand.discrete_dims_position == "first"
+                else input_dim - len(discrete_dims)
+            )
+            # TODO: provide default implementation of discrete prior
+            # discrete_dims.insert(0, max(len(group.channel_indices) for group in integrand.channel_grouping.groups))
+            # input_dim += 1
+        else:
+            raise ValueError(f"Unknown channel grouping mode {channel_grouping_mode}")
+
+        if self.group_channels:
+            self.register_buffer(
+                "channel_group_sizes",
+                torch.tensor(
+                    [
+                        len(group.channel_indices)
+                        for group in integrand.channel_grouping.groups
+                    ]
+                ),
+            )
+            self.register_buffer(
+                "channel_group_remap",
+                torch.zeros(
+                    (len(self.channel_group_sizes), max(self.channel_group_sizes)),
+                    dtype=torch.int64,
+                ),
+            )
+            for group in integrand.channel_grouping.groups:
+                for i, chan_index in enumerate(group.channel_indices):
+                    self.channel_group_remap[group.group_index][i] = chan_index
 
         if flow is None:
-            flow = Flow(
-                dims_in=integrand.input_dim,
-                channels=integrand.unique_channel_count(),
-                **flow_kwargs,
+            channel_remap_function = (
+                None
+                if self.group_channels and not self.group_channels_uniform
+                else self.integrand.remap_channels
             )
+            if len(discrete_dims) == 0:
+                flow = Flow(
+                    dims_in=input_dim,
+                    channels=integrand.unique_channel_count(),
+                    channel_remap_function=channel_remap_function,
+                    **flow_kwargs,
+                )
+            elif len(discrete_dims) == input_dim:
+                if discrete_model == "made":
+                    flow = DiscreteMADE(
+                        dims_in=discrete_dims,
+                        channels=integrand.unique_channel_count(),
+                        channel_remap_function=channel_remap_function,
+                        prior_prob_function=integrand.discrete_prior_prob_function,
+                        **discrete_flow_kwargs,
+                    )
+                elif discrete_model == "transformer":
+                    flow = DiscreteTransformer(
+                        dims_in=discrete_dims,
+                        prior_prob_function=integrand.discrete_prior_prob_function,
+                        **discrete_flow_kwargs,
+                    )
+                    if self.multichannel:
+                        raise NotImplementedError(
+                            "DiscreteTransformer only supported for "
+                            "single-channel integration"
+                        )
+                else:
+                    raise ValueError("discrete_model must be 'made' or 'transformer'")
+            else:
+                discrete_kwargs = dict(
+                    prior_prob_function=integrand.discrete_prior_prob_function,
+                    **discrete_flow_kwargs,
+                )
+                if self.multichannel:
+                    discrete_kwargs["channel_remap_function"] = channel_remap_function
+                flow = MixedFlow(
+                    dims_in_continuous=input_dim - len(discrete_dims),
+                    dims_in_discrete=discrete_dims,
+                    discrete_dims_position=integrand.discrete_dims_position,
+                    discrete_model=discrete_model,
+                    channels=integrand.unique_channel_count(),
+                    continuous_kwargs=dict(
+                        channel_remap_function=channel_remap_function,
+                        **flow_kwargs,
+                    ),
+                    discrete_kwargs=discrete_kwargs,
+                )
+
         if cwnet is None and train_channel_weights and self.multichannel:
             cwnet = MLP(integrand.remapped_dim, integrand.channel_count, **cwnet_kwargs)
         if cwnet is None:
@@ -261,7 +369,11 @@ class Integrator(nn.Module):
 
         self.flow = flow
         self.cwnet = cwnet
-        self.batch_size = batch_size
+        self.batch_size_offset = batch_size
+        self.batch_size_per_channel = batch_size_per_channel
+        self.batch_size = batch_size + batch_size_per_channel * (
+            self.integration_channel_count or 1
+        )
         self.uniform_channel_ratio = uniform_channel_ratio
         self.drop_zero_integrands = drop_zero_integrands
         self.batch_size_threshold = batch_size_threshold
@@ -275,19 +387,21 @@ class Integrator(nn.Module):
         self.max_stored_channel_weights = (
             None
             if max_stored_channel_weights is None
+            or integrand.channel_count is None
             or max_stored_channel_weights >= integrand.channel_count
             else max_stored_channel_weights
         )
         if buffer_capacity > 0:
             channel_count = self.max_stored_channel_weights or integrand.channel_count
             buffer_fields = [
-                (integrand.input_dim,),
+                (input_dim,),
                 None if integrand.remapped_dim is None else (integrand.remapped_dim,),
                 (),
                 (),
                 None if integrand.channel_count is None else (),
                 None if not integrand.has_channel_weight_prior else (channel_count,),
                 None if self.max_stored_channel_weights is None else (channel_count,),
+                () if self.group_channels else None,
                 None,
                 None,
             ]
@@ -299,6 +413,7 @@ class Integrator(nn.Module):
                 torch.int64,
                 None,
                 torch.int64,
+                torch.int64,
                 None,
                 None,
             ]
@@ -309,8 +424,8 @@ class Integrator(nn.Module):
             self.buffer = None
         self.channel_dropping_threshold = channel_dropping_threshold
         self.channel_dropping_interval = channel_dropping_interval
-        self.group_channels_in_loss = group_channels_in_loss
-        hist_shape = (self.integrand.channel_count or 1,)
+        self.freeze_cwnet_iteration = freeze_cwnet_iteration
+        hist_shape = (self.integration_channel_count or 1,)
         self.integration_history = Buffer(
             integration_history_length,
             [hist_shape, hist_shape, hist_shape],
@@ -321,7 +436,7 @@ class Integrator(nn.Module):
         if self.multichannel:
             self.register_buffer(
                 "active_channels_mask",
-                torch.ones((self.integrand.channel_count,), dtype=torch.bool),
+                torch.ones((self.integration_channel_count,), dtype=torch.bool),
             )
         # Dummy to determine device and dtype
         self.register_buffer("dummy", torch.zeros((1,)))
@@ -350,20 +465,27 @@ class Integrator(nn.Module):
             return self._restore_prior(samples)
 
         if samples.alphas_prior is None:
-            log_alpha_prior = samples.x.new_zeros(
+            alpha_prior = samples.x.new_ones(
                 (samples.x.shape[0], self.integrand.channel_count)
             )
         else:
-            log_alpha_prior = self._restore_prior(samples).log()
-        log_alpha = log_alpha_prior.clone()
+            alpha_prior = self._restore_prior(samples)
+
+        if self.group_channels:
+            active_channels_mask = self.active_channels_mask[
+                self.integrand.remap_channels(
+                    torch.arange(alpha_prior.shape[1], device=alpha_prior.device)
+                )
+            ]
+        else:
+            active_channels_mask = self.active_channels_mask
+
+        alpha = alpha_prior * active_channels_mask
         mask = samples.func_vals != 0
         y = samples.x if samples.y is None else samples.y
-        log_alpha[mask] += self.cwnet(y[mask])
-        alpha = torch.zeros_like(log_alpha)
-        alpha[:, self.active_channels_mask] = F.softmax(
-            log_alpha[:, self.active_channels_mask], dim=1
-        )
-        return alpha
+        alpha[mask] *= self.cwnet(y[mask]).exp()
+        ret = alpha / alpha.sum(dim=1, keepdim=True)
+        return ret
 
     def _compute_integral(
         self, samples: SampleBatch
@@ -387,21 +509,24 @@ class Integrator(nn.Module):
             )[:, 0]
             f_true = alphas * samples.func_vals
             f_div_q = f_true.detach() / samples.q_sample
-            counts = torch.bincount(
-                samples.channels, minlength=self.integrand.channel_count
+            channels = (
+                samples.channels
+                if samples.integration_channels is None
+                else samples.integration_channels
             )
+            counts = torch.bincount(channels, minlength=self.integration_channel_count)
             if samples.zero_counts is not None:
                 counts += samples.zero_counts
             means = torch.bincount(
-                samples.channels,
+                channels,
                 weights=f_div_q,
-                minlength=self.integrand.channel_count,
+                minlength=self.integration_channel_count,
             ) / counts.clip(min=1)
             variances = (
                 torch.bincount(
-                    samples.channels,
-                    weights=(f_div_q - means[samples.channels]).square(),
-                    minlength=self.integrand.channel_count,
+                    channels,
+                    weights=(f_div_q - means[channels]).square(),
+                    minlength=self.integration_channel_count,
                 )
                 / counts
             )
@@ -434,20 +559,25 @@ class Integrator(nn.Module):
         # TODO: depending on the loss function and for drop_zero_weights=False, we can encounter
         # zero-weight events here and it might be sufficient to evaluate the flow for events with
         # func_val != 0. That might however give wrong results for other loss functions
-        if self.multichannel:
-            q_test = self.flow.prob(
-                samples.x,
-                channel=self.integrand.remap_channels(samples.channels),
-            )
-        else:
-            q_test = self.flow.prob(samples.x, channel=samples.channels)
-        f_true, means, variances, counts = self._compute_integral(samples)
-        channels = (
-            self.integrand.remap_channels(samples.channels)
-            if self.group_channels_in_loss
-            else samples.channels
+        q_test = self.flow.prob(
+            samples.x,
+            channel=(
+                samples.integration_channels
+                if self.group_channels and not self.group_channels_uniform
+                else samples.channels
+            ),
         )
-        loss = self.loss(f_true, q_test, q_sample=samples.q_sample, channels=channels)
+        f_true, means, variances, counts = self._compute_integral(samples)
+        loss = self.loss(
+            f_true,
+            q_test,
+            q_sample=samples.q_sample,
+            channels=(
+                samples.channels
+                if samples.integration_channels is None
+                else samples.integration_channels
+            ),
+        )
         if loss.isnan().item():
             warnings.warn("nan batch: skipping optimization")
         else:
@@ -507,7 +637,7 @@ class Integrator(nn.Module):
         min_len = self.integration_history.capacity if expect_full_history else 1
         if self.integration_history.size < min_len:
             return torch.ones(
-                self.integrand.channel_count,
+                self.integration_channel_count,
                 device=self.dummy.device,
                 dtype=self.dummy.dtype,
             )
@@ -527,9 +657,11 @@ class Integrator(nn.Module):
         Returns:
             Number of channels that were disabled
         """
-        if self.channel_dropping_threshold == 0.0:
-            return 0
-        if (self.step + 1) % self.channel_dropping_interval != 0:
+        if (
+            not self.multichannel
+            or self.channel_dropping_threshold == 0.0
+            or (self.step + 1) % self.channel_dropping_interval != 0
+        ):
             return 0
 
         mean_hist, _, count_hist = self.integration_history
@@ -546,10 +678,24 @@ class Integrator(nn.Module):
             self.active_channels_mask[cri_argsort[:n_irrelevant]]
         )
         self.active_channels_mask[cri_argsort[:n_irrelevant]] = False
+        self.integrand.update_active_channels_mask(self.active_channels_mask)
+        self.batch_size = (
+            self.batch_size_offset
+            + torch.count_nonzero(self.active_channels_mask).item()
+            * self.batch_size_per_channel
+        )
         if self.buffer is not None:
-            self.buffer.filter(
-                lambda batch: self.active_channels_mask[SampleBatch(*batch).channels]
-            )
+
+            def filter_func(batch):
+                samples = SampleBatch(*batch)
+                channels = (
+                    samples.channels
+                    if samples.integration_channels is None
+                    else samples.integration_channels
+                )
+                return self.active_channels_mask[channels]
+
+            self.buffer.filter(filter_func)
         return n_disabled
 
     def _store_samples(self, samples: SampleBatch):
@@ -618,13 +764,13 @@ class Integrator(nn.Module):
             If return_counts is True, Tensor with number of samples per channel, shape (channels,).
             Otherwise, Tensor of channel numbers with shape (n,)
         """
-        assert channel_weights.shape == (self.integrand.channel_count,)
-        n_active_channels = torch.count_nonzero(self.active_channels_mask)
+        assert channel_weights.shape == (self.integration_channel_count,)
+        n_active_channels = torch.count_nonzero(self.active_channels_mask).item()
         uniform_per_channel = int(
             np.ceil(n * uniform_channel_ratio / n_active_channels)
         )
         n_per_channel = torch.full(
-            (self.integrand.channel_count,),
+            (self.integration_channel_count,),
             uniform_per_channel,
             device=self.dummy.device,
         )
@@ -645,7 +791,7 @@ class Integrator(nn.Module):
         while n_per_channel.sum() > n:
             if n_per_channel[remove_chan] > 0:
                 n_per_channel[remove_chan] -= 1
-            remove_chan = (remove_chan + 1) % self.integrand.channel_count
+            remove_chan = (remove_chan + 1) % self.integration_channel_count
         assert n_per_channel.sum() == n
 
         if return_counts:
@@ -664,6 +810,7 @@ class Integrator(nn.Module):
         uniform_channel_ratio: float = 0.0,
         train: bool = False,
         channel_weight_mode: Literal["variance", "mean"] = "variance",
+        channel: int | None = None,
     ) -> SampleBatch:
         """
         Draws samples from the flow and evaluates the integrand
@@ -676,34 +823,76 @@ class Integrator(nn.Module):
                 is zero will be removed if drop_zero_integrands is True
             channel_weight_mode: specifies whether the channels are weighted by their mean or
                 variance. Note that weighting by mean can lead to problems for non-positive functions
+            channel: if different from None, samples are only generated for this channel
         Returns:
             Object containing a batch of samples
         """
-        channels = (
-            self._get_channels(
-                n,
-                self._get_channel_contributions(train, channel_weight_mode),
-                uniform_channel_ratio,
+        if channel is None:
+            batch_channels = (
+                self._get_channels(
+                    n,
+                    self._get_channel_contributions(train, channel_weight_mode),
+                    uniform_channel_ratio,
+                )
+                if self.multichannel
+                else None
             )
-            if self.multichannel
-            else None
-        )
-        channels_remapped = self.integrand.remap_channels(channels)
+        else:
+            batch_channels = torch.full((n,), channel, device=self.dummy.device)
 
         batches_out = []
         current_batch_size = 0
         while True:
-            with torch.no_grad():
-                x, prob = self.flow.sample(
-                    n,
-                    channel=channels_remapped,
-                    return_prob=True,
-                    device=self.dummy.device,
-                    dtype=self.dummy.dtype,
+            integration_channels = None
+            weight_factor = None
+            if self.integrand.function_includes_sampling:
+                integration_channels = batch_channels
+                x, prob, weight, y, alphas_prior, channels = self.integrand.function(
+                    batch_channels
                 )
+            else:
+                if self.group_channels and self.group_channels_uniform:
+                    group_sizes = self.channel_group_sizes[batch_channels]
+                    chan_in_group = (
+                        torch.rand(
+                            (n,), device=self.dummy.device, dtype=self.dummy.dtype
+                        )
+                        * group_sizes
+                    ).long()
+                    weight_factor = group_sizes
+                    integration_channels = batch_channels
+                    channels = self.channel_group_remap[batch_channels, chan_in_group]
+                else:
+                    channels = batch_channels
 
-            weight, y, alphas_prior = self.integrand(x, channels)
-            batch = SampleBatch(x, y, prob, weight, channels, alphas_prior)
+                with torch.no_grad():
+                    x, prob = self.flow.sample(
+                        n,
+                        channel=channels,
+                        return_prob=True,
+                        device=self.dummy.device,
+                        dtype=self.dummy.dtype,
+                    )
+                weight, y, alphas_prior = self.integrand(x, channels)
+
+                if self.group_channels and not self.group_channels_uniform:
+                    chan_in_group = x[:, self.channel_group_dim].long()
+                    integration_channels = batch_channels
+                    channels = self.channel_group_remap[
+                        integration_channels, chan_in_group
+                    ]
+
+            if weight_factor is not None:
+                weight *= weight_factor
+            batch = SampleBatch(
+                x,
+                y,
+                prob,
+                weight,
+                channels,
+                alphas_prior,
+                integration_channels=integration_channels,
+            )
 
             if not train:
                 current_batch_size += batch.x.shape[0]
@@ -712,7 +901,12 @@ class Integrator(nn.Module):
                 batch = batch.map(lambda t: t[mask])
                 if self.multichannel:
                     batch.zero_counts = torch.bincount(
-                        channels[~mask], minlength=self.integrand.channel_count
+                        (
+                            channels[~mask]
+                            if integration_channels is None
+                            else integration_channels[~mask]
+                        ),
+                        minlength=self.integration_channel_count,
                     )
                 else:
                     batch.zero_counts = torch.full(
@@ -738,6 +932,10 @@ class Integrator(nn.Module):
         Returns:
             Training status
         """
+
+        if self.step == self.freeze_cwnet_iteration and self.cwnet is not None:
+            for param in self.cwnet.parameters():
+                param.requires_grad = False
 
         if self.step_type_count == 0:
             buffered = False
@@ -891,8 +1089,13 @@ class Integrator(nn.Module):
             ``UnweightingMetrics`` object, see its documentation for details
         """
         samples = self.sample(n, batch_size, channel_weight_mode)
+        channels = (
+            samples.channels
+            if samples.integration_channels is None
+            else samples.integration_channels
+        )
         return unweighting_metrics(
-            samples.weights, samples.channels, self.integrand.channel_count
+            samples.weights, channels, self.integration_channel_count
         )
 
     def sample(
@@ -900,6 +1103,7 @@ class Integrator(nn.Module):
         n: int,
         batch_size: int = 100000,
         channel_weight_mode: Literal["uniform", "mean", "variance"] = "variance",
+        channel: int | None = None,
     ) -> SampleBatch:
         """
         Draws samples and computes their integration weight
@@ -910,6 +1114,7 @@ class Integrator(nn.Module):
             channel_weight_mode: specifies whether the channels are weighted by their mean,
                 variance or uniformly. Note that weighting by mean can lead to problems for
                 non-positive functions
+            channel: if different from None, samples are only generated for this channel
         Returns:
             ``SampleBatch`` object, see its documentation for details
         """
@@ -926,6 +1131,7 @@ class Integrator(nn.Module):
                 uniform_channel_ratio,
                 False,
                 channel_weight_mode,
+                channel,
             )
             if self.multichannel:
                 with torch.no_grad():
@@ -940,4 +1146,10 @@ class Integrator(nn.Module):
             else:
                 batch.weights = batch.func_vals / batch.q_sample
             samples.append(batch)
-        return SampleBatch.cat(samples)
+        cat_samples = SampleBatch.cat(samples)
+        if self.multichannel:
+            norm_factors = len(cat_samples.channels) / torch.bincount(
+                cat_samples.channels, minlength=self.integration_channel_count
+            )
+            cat_samples.weights *= norm_factors[cat_samples.channels]
+        return cat_samples

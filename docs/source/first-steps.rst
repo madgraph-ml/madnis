@@ -92,20 +92,20 @@ with the number of samples as its argument.
 .. code-block:: python
 
     from pprint import pp
-    pp(integrator.integration_metrics(100000))
+    pp(integrator.integration_metrics(1000000))
 
 The pretty-printed output is
 
 .. code-block:: text
 
     IntegrationMetrics(integral=0.9999313354492188,
-                       count=100000,
+                       count=1000000,
                        error=0.0005457350634969771,
                        rel_error=0.0005457725387231772,
                        rel_stddev=0.17258843067376853,
                        rel_stddev_opt=0.17258842717815095,
                        channel_integrals=[0.9999313354492188],
-                       channel_counts=[100000],
+                       channel_counts=[1000000],
                        channel_errors=[0.0005457350634969771],
                        channel_rel_errors=[0.0005457725492306054],
                        channel_rel_stddevs=[0.17258842289447784])
@@ -122,7 +122,7 @@ the function :py:meth:`unweighting_metrics <madnis.integrator.Integrator.unweigh
 
 .. code-block:: python
 
-    pp(integrator.unweighting_metrics(100000))
+    pp(integrator.unweighting_metrics(1000000))
 
 Its output is
 
@@ -154,7 +154,7 @@ reweighting with the integration weights.
 
     import matplotlib.pyplot as plt
     import numpy as np
-    samples = integrator.sample(100000)
+    samples = integrator.sample(1000000)
     bins = np.linspace(0, 1, 30)
     plt.hist(samples.x[:,0].numpy(), bins, histtype="step", label="learned", density=True)
     plt.hist(
@@ -168,6 +168,7 @@ reweighting with the integration weights.
     plt.xlabel("$x_1$")
     plt.xlim(0, 1)
     plt.legend()
+    plt.show()
 
 This results in the following plot:
 
@@ -196,7 +197,7 @@ enable it with a few additional arguments to the integrator.
             print(f"Batch {status.step + 1}: loss={status.loss:.5f}")
     integrator.train(100, callback)
     result, error = integrator.integral()
-    print(integrator.integration_metrics(100000).rel_stddev)
+    print(integrator.integration_metrics(1000000).rel_stddev)
 
 We set the buffer capacity such that up to 102400 points are buffered. ``minimum_buffer_size``
 sets the minimum amount of samples in the buffer necessary to start training on them. With the

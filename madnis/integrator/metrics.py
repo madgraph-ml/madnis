@@ -155,7 +155,7 @@ def integration_metrics(
     """
     channel_square_errors = channel_variances / channel_counts
     integral = channel_means.sum().item()
-    integral_abs = abs(integral)
+    integral_abs = max(abs(integral), 1e-15)
     count = channel_counts.sum().item()
     error = channel_square_errors.nansum().sqrt().item()
     channel_stddevs = channel_variances.nan_to_num().sqrt()

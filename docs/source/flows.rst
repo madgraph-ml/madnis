@@ -57,6 +57,7 @@ normalizing flow has indeed learned the distribution of the training data by mak
     plt.hist(samples[:,0], bins=bins, histtype="step", label="generated", density=True)
     plt.xlabel("$x_1$")
     plt.legend()
+    plt.show()
 
 .. figure:: figs/flow-unconditional.png
 
@@ -109,6 +110,7 @@ can check if we recover the distribution :math:`p(x)` by sampling from :math:`p(
     plt.hist(samples_x1[:,0], bins=bins, histtype="step", label="$p(x|y^{(1)})$", density=True)
     plt.xlabel("$x_1$")
     plt.legend()
+    plt.show()
 
 .. figure:: figs/flow-conditional.png
 
@@ -137,7 +139,7 @@ flows used in MadNIS.
 
 The argument ``channels`` can be used to specify the number of channels and build a
 multi-channel flow, i.e. multiple independent flows that share the same architecture and can
-therefore be efficiently evaluated in parallel in parallel. In this cases, the ``channel``
+therefore be efficiently evaluated in parallel. In this case, the ``channel``
 argument has to be given when the methods :py:meth:`sample <madnis.nn.Flow.sample>`,
 :py:meth:`prob <madnis.nn.Flow.prob>`, :py:meth:`log_prob <madnis.nn.Flow.log_prob>` or
 :py:meth:`transform <madnis.nn.Flow.transform>` are called. Lastly, the ``mapping`` argument

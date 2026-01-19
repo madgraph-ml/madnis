@@ -1,3 +1,4 @@
+from typing import Literal
 from collections.abc import Callable
 
 import torch
@@ -21,6 +22,13 @@ class Integrand(nn.Module):
         remapped_dim: int | None = None,
         has_channel_weight_prior: bool = False,
         channel_grouping: ChannelGrouping | None = None,
+        function_includes_sampling: bool = False,
+        update_active_channels_mask: Callable[[torch.Tensor], None] | None = None,
+        discrete_dims: list[int] = [],
+        discrete_dims_position: Literal["first", "last"] = "first",
+        discrete_prior_prob_function: (
+            Callable[[torch.Tensor, int], torch.Tensor] | None
+        ) = None,
     ):
         """
         Args:
@@ -57,14 +65,23 @@ class Integrand(nn.Module):
             has_channel_weight_prior: If True, the integrand returns channel weights
             channel_grouping: ChannelGrouping object or None if all channels are independent
         """
+        # TODO: update documentation
         super().__init__()
         self.input_dim = input_dim
         self.remapped_dim = input_dim if remapped_dim is None else remapped_dim
         self.channel_count = channel_count
         self.has_channel_weight_prior = has_channel_weight_prior
         self.channel_grouping = channel_grouping
+        self.function_includes_sampling = function_includes_sampling
+        self.update_active_channels_mask_func = update_active_channels_mask
 
-        if channel_count is None:
+        self.discrete_dims = discrete_dims
+        self.discrete_dims_position = discrete_dims_position
+        self.discrete_prior_prob_function = discrete_prior_prob_function
+
+        if function_includes_sampling:
+            self.function = function
+        elif channel_count is None:
             self.function = lambda x, channels: (function(x), None, None)
         elif remapped_dim is None:
             if has_channel_weight_prior:
@@ -124,20 +141,33 @@ class Integrand(nn.Module):
         else:
             return len(self.channel_grouping.groups)
 
-    def remap_channels(self, channels: torch.Tensor) -> torch.Tensor:
+    def remap_channels(self, channels: torch.Tensor | int) -> torch.Tensor | int:
         """
         Remaps channel indices to the indices of their respective channel groups if a
         ``ChannelGrouping`` object was provided, otherwise returns the indices unchanged.
 
         Args:
-            channels: channel indices, shape (n, )
+            channels: channel indices, tensor with shape (n, ) or integer
         Returns:
-            remapped channel indices, shape (n, )
+            remapped channel indices, tensor with shape (n, ) or integer
         """
         if self.channel_grouping is None:
             return channels
+        elif isinstance(channels, int):
+            return self.channel_id_map[channels].item()
         else:
             return self.channel_id_map[channels]
+
+    def update_active_channels_mask(self, mask: torch.Tensor) -> None:
+        if self.update_active_channels_mask_func is None:
+            return
+
+        full_mask = mask[
+            self.remap_channels(
+                torch.arange(len(self.channel_grouping.channels), device=mask.device)
+            )
+        ]
+        self.update_active_channels_mask_func(full_mask)
 
     def forward(
         self, x: torch.Tensor, channels: torch.Tensor | None

@@ -2,7 +2,9 @@ name: Publish to PyPI
 
 # Automate publishing based on https://packaging.python.org/en/latest/guides/publishing-package-distribution-releases-using-github-actions-ci-cd-workflows/
 
-on: push
+on:
+  push:
+    branches: ["main"]
 
 jobs:
   build:

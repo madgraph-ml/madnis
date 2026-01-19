@@ -48,7 +48,8 @@ def multi_channel_loss(loss: SingleChannelLoss) -> MultiChannelLoss:
             mask = channels == channel
             fi, qti, qsi = f_true[mask], q_test[mask], q_sample[mask]
             ni = mask.count_nonzero()
-            loss_tot += ni / q_sample.shape[0] * loss(fi, qti, qsi) if ni > 0 else 0.0
+            # loss_tot += ni / q_sample.shape[0] * loss(fi, qti, qsi) if ni > 0 else 0.0
+            loss_tot += loss(fi, qti, qsi) if ni > 0 else 0.0
         return loss_tot
 
     return wrapped_multi
@@ -76,7 +77,8 @@ def stratified_variance(
     if q_sample is None:
         q_sample = q_test
     if channels is None:
-        return _variance(f_true, q_test, q_sample)
+        abs_integral = torch.mean(f_true.detach().abs() / q_sample)
+        return _variance(f_true, q_test, q_sample) / abs_integral.square()
 
     stddev_sum = 0
     abs_integral = 0
@@ -85,15 +87,35 @@ def stratified_variance(
         fi, qti, qsi = f_true[mask], q_test[mask], q_sample[mask]
         stddev_sum += torch.sqrt(_variance(fi, qti, qsi) + dtype_epsilon(f_true))
         abs_integral += torch.mean(fi.detach().abs() / qsi)
-
     return (stddev_sum / abs_integral) ** 2
+
+    # variances = []
+    # abs_integrals = []
+    # for i in channels.unique():
+    #    mask = channels == i
+    #    fi, qti, qsi = f_true[mask], q_test[mask], q_sample[mask]
+    #    variances.append(_variance(fi, qti, qsi) + dtype_epsilon(f_true))
+    #    abs_integrals.append(torch.mean(fi.abs() / qsi))
+    # abs_integral_tot = sum(abs_integrals)
+    # return sum(
+    #    abs_integral / abs_integral_tot * variance
+    #    for abs_integral, variance in zip(abs_integrals, variances)
+    # ) / abs_integral_tot.detach().square()
+
+
+@multi_channel_loss
+def variance(
+    f_true: torch.Tensor, q_test: torch.Tensor, q_sample: torch.Tensor
+) -> torch.Tensor:
+    abs_integral = torch.mean(f_true.detach().abs() / q_sample) + dtype_epsilon(f_true)
+    return _variance(f_true, q_test, q_sample) / abs_integral.square()
 
 
 def _variance(
     f_true: torch.Tensor,
     q_test: torch.Tensor,
     q_sample: torch.Tensor,
-):
+) -> torch.Tensor:
     """
     Computes the variance for two given sets of probabilities, ``f_true`` and ``q_test``. It uses
     importance sampling with a sampling probability specified by ``q_sample``.

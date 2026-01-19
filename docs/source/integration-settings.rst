@@ -1,7 +1,7 @@
 Integration settings
 ====================
 
-In the last two tutorial, we have discussed how the MadNIS integrator can be used for single- and
+In the last two tutorials, we have discussed how the MadNIS integrator can be used for single- and
 multi-channel integration. This page describes further options to adapt the integrator for
 different applications.
 
