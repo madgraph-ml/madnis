@@ -1,5 +1,6 @@
 import math
-from typing import Callable, Literal, Protocol
+from typing import Literal, Protocol
+from collections.abc import Callable
 
 import numpy as np
 import torch

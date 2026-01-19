@@ -1,5 +1,5 @@
 from collections.abc import Iterable
-from typing import Callable
+from collections.abc import Callable
 
 import torch
 import torch.nn as nn
