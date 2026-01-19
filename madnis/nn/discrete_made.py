@@ -1,5 +1,4 @@
-from collections.abc import Iterable
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 
 import torch
 import torch.nn as nn
