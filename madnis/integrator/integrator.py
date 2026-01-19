@@ -12,7 +12,7 @@ import torch.nn.functional as F
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import LRScheduler
 
-from ..nn import MLP, DiscreteMADE, Distribution, Flow, MixedFlow
+from ..nn import MLP, DiscreteMADE, DiscreteTransformer, Distribution, Flow, MixedFlow
 from .buffer import Buffer
 from .integrand import Integrand
 from .losses import MultiChannelLoss, kl_divergence, stratified_variance, variance
