@@ -73,6 +73,26 @@ class VegasPreTraining:
         self.rng = np.random.default_rng()
         self.step = 0
 
+    def _map_discrete(self, x: torch.Tensor, jac: np.array) -> torch.Tensor:
+        disc_dims = len(self.integrand.discrete_dims)
+        disc_dims_vec = torch.tensor(self.integrand.discrete_dims, device=x.device)
+        if disc_dims == 0:
+            return x, jac
+        map_disc = lambda x_disc: torch.clip(
+            torch.floor(x_disc * disc_dims_vec),
+            min=torch.tensor(0.0, device=x_disc.device),
+            max=disc_dims_vec - 1,
+        )
+        if self.integrand.discrete_dims_position == "first":
+            x_disc = x[:, :disc_dims]
+            x_cont = x[:, disc_dims:]
+            x_ret = torch.cat([map_disc(x_disc), x_cont], dim=1)
+        else:
+            x_disc = x[:, -disc_dims:]
+            x_cont = x[:, :-disc_dims]
+            x_ret = torch.cat([x_cont, map_disc(x_disc)], dim=1)
+        return x_ret, jac * np.prod(self.integrand.discrete_dims)
+
     def train_step(self, samples_per_channel: int) -> VegasTrainingStatus:
         """
         Performs a single VEGAS training iteration
@@ -100,6 +120,7 @@ class VegasPreTraining:
             r = self.rng.random((samples_per_channel, self.input_dim))
             grid.map(r, x, jac)
             x_torch = torch.as_tensor(x, dtype=self.integrator.dummy.dtype)
+            x_torch, jac = self._map_discrete(x_torch, jac)
 
             if (
                 self.integrator.group_channels
@@ -272,15 +293,15 @@ class VegasPreTraining:
             if self.integrator.multichannel
             else grids_torch[0]
         )
-        # if self.integrator.group_channels and not self.integrator.group_channels_uniform:
-        #    uniform_grid = torch.linspace(0, 1, grids.shape[2])[None, None, :].expand(
-        #        grids.shape[0], -1, -1
-        #    )
-        #    n_continuous = self.integrand.input_dim - len(self.integrand.discrete_dims)
-        #    grids = torch.cat((
-        #        grids[:, :n_continuous], uniform_grid, grids[:, n_continuous:]
-        #    ), dim=1)
-        self.integrator.flow.init_with_grid(grids)
+        disc_dims = len(self.integrand.discrete_dims)
+        if disc_dims > 0:
+            if self.integrand.discrete_dims_position == "first":
+                grids = grids[..., disc_dims:, :]
+            else:
+                grids = grids[..., :-disc_dims, :]
+            self.integrator.flow.continuous_flow.init_with_grid(grids)
+        else:
+            self.integrator.flow.init_with_grid(grids)
 
     def sample(
         self,
@@ -302,7 +323,7 @@ class VegasPreTraining:
         Returns:
             ``SampleBatch`` object, see its documentation for details
         """
-        if channel is None:
+        if channel is None and self.integrator.multichannel:
             if channel_weight_mode == "uniform":
                 uniform_channel_ratio = 1.0
                 channel_weight_mode = "variance"
@@ -335,6 +356,7 @@ class VegasPreTraining:
             r = self.rng.random((n_samples, self.input_dim))
             grid.map(r, x, jac)
             x_torch = torch.as_tensor(x, dtype=self.integrator.dummy.dtype)
+            x_torch, jac = self._map_discrete(x_torch, jac)
             integration_channels = None
             if self.integrator.group_channels:
                 channels = torch.from_numpy(
@@ -403,13 +425,25 @@ class VegasPreTraining:
             samples.append(
                 sample_batch.map(lambda t: t.to(self.integrator.dummy.device))
             )
-        return SampleBatch.cat(samples)
+        cat_samples = SampleBatch.cat(samples)
+        if self.integrator.multichannel:
+            norm_factors = len(cat_samples.channels) / torch.bincount(
+                cat_samples.channels,
+                minlength=self.integrator.integration_channel_count,
+            )
+            cat_samples.weights *= norm_factors[cat_samples.channels]
+        return cat_samples
 
     def _compute_integral(
         self, samples: SampleBatch
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         if self.integrator.multichannel:
             n_channels = self.integrator.integration_channel_count
+            alphas = torch.gather(
+                samples.alphas, index=samples.channels[:, None], dim=1
+            )[:, 0]
+            f_true = alphas * samples.func_vals
+            f_div_q = f_true.detach() / samples.q_sample
             channels = (
                 samples.channels
                 if samples.integration_channels is None
@@ -418,13 +452,13 @@ class VegasPreTraining:
             counts = torch.bincount(channels, minlength=n_channels)
             means = torch.bincount(
                 channels,
-                weights=samples.weights,
+                weights=f_div_q,
                 minlength=n_channels,
             ) / counts.clip(min=1)
             variances = (
                 torch.bincount(
                     channels,
-                    weights=(samples.weights - means[channels]).square(),
+                    weights=(f_div_q - means[channels]).square(),
                     minlength=n_channels,
                 )
                 / counts
@@ -466,11 +500,6 @@ class VegasPreTraining:
             ``IntegrationMetrics`` object, see its documentation for details
         """
         samples = self.sample(n)
-        import pickle
-
-        with open("events.pkl", "wb") as f:
-            print("pickel")
-            pickle.dump(samples, f)
         means, variances, counts = self._compute_integral(samples)
         self.integrator.integration_history.store(
             means[None], variances[None], counts[None]
