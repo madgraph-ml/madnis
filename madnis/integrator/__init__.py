@@ -9,9 +9,11 @@ from .integrand import Integrand
 from .integrator import Integrator, SampleBatch, TrainingStatus
 from .losses import (
     kl_divergence,
+    kl_divergence_softclip,
     multi_channel_loss,
     rkl_divergence,
     stratified_variance,
+    stratified_variance_softclip,
     variance,
 )
 from .metrics import (
@@ -30,8 +32,10 @@ __all__ = [
     "Buffer",
     "multi_channel_loss",
     "stratified_variance",
+    "stratified_variance_softclip",
     "variance",
     "kl_divergence",
+    "kl_divergence_softclip",
     "rkl_divergence",
     "ChannelGroup",
     "ChannelData",
