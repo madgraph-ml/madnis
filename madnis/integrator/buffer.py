@@ -1,4 +1,4 @@
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 
 import torch
 import torch.nn as nn
@@ -39,10 +39,30 @@ class Buffer(nn.Module):
             )
             self.keys.append(key)
         self.capacity = capacity
-        self.size = 0
-        self.store_index = 0
+        self.register_buffer(
+            "_size", torch.zeros((), dtype=torch.int64), persistent=persistent
+        )
+        self.register_buffer(
+            "_store_index", torch.zeros((), dtype=torch.int64), persistent=persistent
+        )
 
-    def _batch_slices(self, batch_size: int) -> slice:
+    @property
+    def size(self):
+        return int(self._size.item())
+
+    @size.setter
+    def size(self, value):
+        self._size.fill_(int(value))
+
+    @property
+    def store_index(self):
+        return int(self._store_index.item())
+
+    @store_index.setter
+    def store_index(self, value):
+        self._store_index.fill_(int(value))
+
+    def _batch_slices(self, batch_size: int) -> Iterator[slice]:
         """
         Returns slices that split up the buffer into batches of at most ``batch_size``, respecting
         the buffer size and periodic boundary.
@@ -58,7 +78,7 @@ class Buffer(nn.Module):
             yield slice(start, stop)
             start = stop
 
-    def _buffer_fields(self) -> torch.Tensor | None:
+    def _buffer_fields(self) -> Iterator[torch.Tensor | None]:
         """
         Iterates over the buffered tensors, without removing the padding if the buffer is not full.
 
@@ -68,7 +88,7 @@ class Buffer(nn.Module):
         for key in self.keys:
             yield getattr(self, key)
 
-    def __iter__(self) -> torch.Tensor | None:
+    def __iter__(self) -> Iterator[torch.Tensor | None]:
         """
         Iterates over the buffered tensors
 

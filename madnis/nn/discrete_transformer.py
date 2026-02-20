@@ -108,7 +108,7 @@ class DiscreteTransformer(nn.Module, Distribution):
             dtype = c.dtype
             device = c.device
 
-        x = torch.zeros((n, 0), dtype=torch.int64)
+        x = torch.zeros((n, 0), dtype=torch.int64, device=device)
         prob = torch.ones((n,), dtype=dtype, device=device)
         embedding = None
         if c is not None:
